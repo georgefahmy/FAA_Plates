@@ -2,22 +2,37 @@
 
 A safety-critical Python CLI and Streamlit Web application built around official FAA Digital Terminal Procedures Publication (**d-TPP**) vector **PDFs** (`d-TPP_Metafile.xml` + `DDTPPA..E`) as well as raster images (`.png`, `.jpg`, `.jpeg`), rendering a standardized **"4-Color Tactical Briefing"** RGBA highlight overlay.
 
+---
+
 ## 🔒 Safety-Critical Non-Destructive Guarantee
 
-- **Zero Generative AI / Zero Pixel or Vector Mutation:** The underlying FAA PDF vectors and rendered pixels are **never** passed through generative image models, image-to-image translation, or text re-rendering.
-- **Native PDF Vector Extraction (`enhancer/pdf_engine.py`):** Extracts exact 100%-accurate vector text spans, rotated 4-corner text quadrilaterals (`dir_vec` + `recover_line_quad`), bold approach course/slope vectors (`lw=1.44`), curved dashed missed-approach escape polylines (`lw=0.72`), holding racetracks, and 16-Bezier MSA circles directly from the FAA PDF via `PyMuPDF` (`fitz`).
-- **Pure RGBA Alpha-Compositing & Non-Destructive PDF Export (`enhancer/compositor.py`):** Every highlight (rounded rectangles, rotated quadrilaterals, and 2x-supersampled uniform-alpha flight-path ribbons) is drawn onto a separate transparent layer (`PIL.Image.new("RGBA", size, (0, 0, 0, 0))`) and composited strictly on top of the locked base chart via `Image.alpha_composite()`, or inserted as an overlay layer (`overlay=True`) onto the original vector PDF.
+- **Zero Generative AI / Zero Pixel or Vector Mutation:** Underlying FAA PDF vectors, text glyphs, and rendered pixels are **never** passed through generative models, image-to-image translation, or text re-rendering.
+- **Native PDF Vector Extraction (`enhancer/pdf_engine.py`):** Extracts exact 100%-accurate vector text spans, rotated 4-corner text quadrilaterals (`dir_vec` + `recover_line_quad`), bold approach course/slope vectors (`lw=1.44`), curved dashed missed-approach escape polylines (`lw=0.72`), holding racetracks, and 16-Bezier MSA circles directly from the FAA PDF via `PyMuPDF` (`pymupdf`).
+- **Pure RGBA Alpha-Compositing & Non-Destructive PDF Export (`enhancer/compositor.py`):** Every highlight (rounded rectangles, rotated quadrilaterals, and 2x-supersampled uniform-alpha flight-path ribbons) is drawn onto an isolated transparent layer (`PIL.Image.new("RGBA", size, (0, 0, 0, 0))`) and composited strictly on top of the locked base chart, or inserted as an overlay layer (`overlay=True`) onto the original vector PDF.
+- **Strict Base Pixel Integrity Verification:** The pipeline cryptographically verifies that all underlying chart pixels outside highlight regions are 100% bit-for-bit identical to the official FAA source.
 
 ---
 
-## 🗂️ Built-In FAA d-TPP XML & PDF Plate Browser (`enhancer/plate_browser.py`)
+## 🐍 Virtual Environment & Prerequisites
 
-Automatically parses `/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml` and indexes **24,075+ official FAA PDFs** across `DDTPPA_261001` through `DDTPPE_261001` into a fast local SQLite cache (`.cache/dtpp_catalog.sqlite`), allowing instant search and filtering by:
-- **State** (54 US states & territories)
-- **City**
-- **Airport** (FAA LID, ICAO ID, or Airport Name, e.g., `E16`, `KSMO`, `KSJC`)
-- **Chart Type** (`IAP`, `APD`, `DP`, `STAR`, `MIN`, `ODP`, `HOT`)
-- **Direct Plate Search** (e.g., `E16 RNAV 32` or `KSMO RNAV 21`)
+This project is configured and tested with Python 3.14 using the user's dedicated `plates` virtual environment:
+
+```bash
+# Interpreter path:
+~/.virtualenvs/plates/bin/python
+
+# Core dependencies installed:
+# - pymupdf (1.28.2)
+# - opencv-python-headless (5.0.0.93)
+# - pillow (12.3.0)
+# - numpy (2.5.4)
+# - streamlit (1.66.0)
+```
+
+To install or verify requirements:
+```bash
+~/.virtualenvs/plates/bin/pip install -r requirements.txt
+```
 
 ---
 
@@ -32,50 +47,99 @@ Automatically parses `/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_2
 
 ---
 
-## 🚀 Quickstart
-
-### 1. Command-Line Interface (`cli.py`)
-
-Enhance an official FAA d-TPP PDF directly (outputs both PNG and optional enhanced vector PDF):
-```bash
-~/.virtualenvs/tracker/bin/python3 cli.py /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
-  -o e16_rnav32_enhanced.png \
-  --pdf-out e16_rnav32_enhanced.pdf \
-  --categories A B --approaches LPV LNAV/VNAV
-```
-
-### 2. Batch Directory Enhancer (IAC Plates Only) via CLI
-
-Scan any directory (such as an Airmate `ChartData` folder) and automatically batch-enhance **only** official Instrument Approach Procedure (`IAC` / `IAP`) vector PDF charts while leaving all other charts (`APD`, `DP`, `STAR`, `MIN`) 100% untouched:
-
-```bash
-# In-place safe enhancement of all IAC plates as vector PDFs (using 8 worker threads)
-~/.virtualenvs/plates/bin/python cli.py --batch-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData --format PDF --workers 8
-
-# Batch enhance to high-resolution PNG images in a separate folder
-~/.virtualenvs/plates/bin/python cli.py --batch-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
-  --batch-output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData/Enhanced_IAC_PNG \
-  --format PNG --batch-limit 10
-```
-
-### 3. Streamlit Web UI (`app.py`)
+## ⚡ Streamlit Web Application (`app.py`)
 
 Launch the interactive app:
 ```bash
 ~/.virtualenvs/plates/bin/streamlit run app.py
 ```
 
-Features in the Web UI:
-- **🔍 Single Plate Tactical Viewer & Briefing:**
-  - Built-in FAA d-TPP XML Catalog Browser (filter by State, City, Airport LID/ICAO, Chart Type).
-  - Side-by-side original vs. 4-color tactical overlay comparison.
-  - Interactive layer toggles (Cyan, Magenta, Amber, Red).
-  - Aircraft Category & Minimums selection (A, B, C, D; LPV, LNAV/VNAV, etc.).
-  - Instant Enhanced PNG and Vector PDF downloads + Markdown "5 A's" Pilot Briefing.
-- **⚡ Batch Directory Enhancer (IAC Plates Only):**
-  - Pass an extracted plates directory (e.g. `/Users/GFahmy/Documents/RV-7/Airmate/ChartData`).
-  - Auto-discovers all 11,151+ IAC plates using `Plates.sqlite` (or `d-TPP_Metafile.xml`).
-  - Safe in-place overwrite or separate export folder.
-  - Multi-threaded processing with live progress bar, speed (plates/sec), elapsed time, ETA, and recent activity log.
-  - Strict exclusion of non-IAC files (APD, DP, STAR, MIN untouched).
+The Web UI features two distinct operation modes:
 
+### 1. 🔍 Single Plate Tactical Viewer & Briefing
+- **Built-in FAA d-TPP XML Catalog Browser:** Filter through 24,075+ charts by State, City, Airport (FAA LID / ICAO), and Chart Type (`IAP`, `APD`, `DP`, `STAR`, `MIN`).
+- **Interactive Layer Toggles:** Enable or disable Cyan, Magenta, Amber, or Red layers in real time.
+- **Aircraft Minimums Customizer:** Select Aircraft Category (`A`, `B`, `C`, `D`) and target approaches (`LPV`, `LNAV/VNAV`, `ILS`, `LOC`, `CIRCLING`).
+- **Interactive Side-by-Side Comparison:** Instant high-DPI inspection of original vs. enhanced plate.
+- **Pilot Briefing & Downloads:** Generates Markdown "5 A's" briefing summary and one-click downloads for enhanced vector `.pdf` and high-res `.png`.
+
+### 2. ⚡ Batch Directory Enhancer (IAC Plates Only)
+- **Directory Path Input:** Point to any folder (e.g. `/Users/GFahmy/Documents/RV-7/Airmate/ChartData`).
+- **Targeted Discovery:** Automatically reads `Plates.sqlite` (or `d-TPP_Metafile.xml`) to identify all **11,151** Instrument Approach Procedure (`IAC` / `IAP` / `DAU`) charts.
+- **Strict Non-IAC Protection:** All non-IAC charts (`APD` Airport Diagrams, `DP` Departures, `STAR` Arrivals, `MIN` Minimums) are strictly preserved and left 100% untouched.
+- **Output File Format Selector:**
+  - `PDF (Enhanced Vector PDF with Overlay)`
+  - `PNG (High-Resolution RGBA Image)`
+  - `Both (PDF + PNG)`
+- **Output Destination:** Safe in-place overwrite (with atomic file renaming) or export to a dedicated subfolder.
+- **Multithreaded Processing:** Configurable worker threads (1–16) with live progress bar, speed (plates/sec), elapsed time, ETA, and recent file activity log.
+
+---
+
+## 💻 Command-Line Interface (`cli.py`)
+
+### 1. Single Plate Enhancement
+```bash
+# Enhance a single FAA vector PDF to PNG:
+~/.virtualenvs/plates/bin/python cli.py /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
+  -o e16_rnav32_enhanced.png \
+  --categories A B --approaches LPV LNAV/VNAV
+
+# Enhance directly to vector PDF:
+~/.virtualenvs/plates/bin/python cli.py /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
+  -o e16_rnav32_enhanced.pdf
+
+# Select airport from catalog and output pilot briefing:
+~/.virtualenvs/plates/bin/python cli.py --airport E16 --chart "RNAV (GPS) RWY 32" \
+  -o e16_rnav32.pdf --briefing e16_briefing.md
+```
+
+### 2. Batch Directory Enhancement (IAC Only)
+```bash
+# Safe in-place overwrite of all 11,151 IAC plates as vector PDFs (8 workers):
+~/.virtualenvs/plates/bin/python cli.py \
+  --batch-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --format PDF \
+  --workers 8
+
+# Batch enhance to high-res PNGs in a separate output directory:
+~/.virtualenvs/plates/bin/python cli.py \
+  --batch-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --batch-output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData/Enhanced_IAC_PNG \
+  --format PNG \
+  --workers 8
+
+# Test run on the first 10 plates:
+~/.virtualenvs/plates/bin/python cli.py \
+  --batch-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --format PDF \
+  --batch-limit 10
+```
+
+---
+
+## 📦 Standalone Airmate ChartData Recreator (`recreate_airmate_chartdata.py`)
+
+Rebuilds an entire Airmate-compatible `ChartData` structure (SQLite database + single-page PDF folder) **100% standalone** from official FAA source data (`d-TPP_Metafile.xml` + PDF volumes `DDTPPA`..`E`), with zero dependency on proprietary Airmate reference data:
+
+```bash
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --xml-path /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml \
+  --faa-dir /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data \
+  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData
+```
+
+### Key Output Features:
+- **Strict Single-Page PDFs:** Multi-page FAA booklets (Takeoff Minimums, Alternate Minimums, etc.) are automatically split into individual numbered single-page PDFs (`EC1ALT01.PDF`, `EC1ALT02.PDF`, etc.) and indexed by vector text matching.
+- **Relational `Plates.sqlite`:** Creates SQLite tables (`Airports`, `Charts`, `Countries`, `Regions`) mapping 5,294 airports and 30,145 charts.
+- **Standardized Folder Layout:** Produces `Plates/Plates.sqlite` and `Plates/US/` containing 22,357 single-page vector PDFs ready for EFBs.
+
+---
+
+## 🧪 Running Tests
+
+Run the unit and integration tests using Python's standard `unittest` framework:
+
+```bash
+~/.virtualenvs/plates/bin/python -m unittest tests/test_batch_engine.py
+```
