@@ -452,6 +452,7 @@ def render_chartdata_generator_panel(
                 f"- **Format:** `{summary['output_format'].upper()}` ({'Dynon Avionics SkyView' if summary['output_format'] == 'png' else 'FAA Vector PDF'})\n"
                 f"- **Airports Indexed:** `{summary['total_airports']:,}`\n"
                 f"- **Charts in Database:** `{summary['total_charts']:,}` (d-TPP: `{summary['total_charts'] - summary['afd_charts_count']:,}`, AFD: `{summary['afd_charts_count']:,}`)\n"
+                f"- **Georeferenced Charts:** `{summary.get('georeferenced_charts', 0):,}`\n"
                 f"- **Files Processed:** `{summary['completed_files']:,}` (Errors: `{summary['errors']}`)\n"
                 f"- **Cycle:** `{summary['cycle']}` ({summary['valid_dates'][0]} → {summary['valid_dates'][1]})"
             )

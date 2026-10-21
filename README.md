@@ -51,7 +51,9 @@ To install or verify requirements:
 
 Launch the interactive app:
 ```bash
-~/.virtualenvs/plates/bin/streamlit run app.py
+./run.sh
+# or directly via:
+# ~/.virtualenvs/plates/bin/streamlit run app.py
 ```
 
 The Web UI features two distinct operation modes:

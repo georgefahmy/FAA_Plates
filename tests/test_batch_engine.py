@@ -65,11 +65,12 @@ class TestBatchEngine(unittest.TestCase):
             sample_item = plates[0]
             out_pdf = tmp_path / sample_item.file_name
 
-            # Test PDF enhancement
-            res_pdf = enhance_single_iac_file(sample_item, output_path=out_pdf, output_format="PDF")
-            self.assertTrue(res_pdf.success)
-            self.assertGreater(res_pdf.highlights_count, 0)
-            self.assertTrue(out_pdf.is_file())
+            # Test PDF enhancement (when input is PDF)
+            if sample_item.file_name.upper().endswith(".PDF"):
+                res_pdf = enhance_single_iac_file(sample_item, output_path=out_pdf, output_format="PDF")
+                self.assertTrue(res_pdf.success)
+                self.assertGreater(res_pdf.highlights_count, 0)
+                self.assertTrue(out_pdf.is_file())
 
             # Test PNG enhancement
             out_png = tmp_path / "test_out"

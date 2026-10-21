@@ -23,6 +23,7 @@ Built 100% natively from:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import shutil
@@ -121,6 +122,190 @@ def format_page_filename(stem: str, page_num: int, ext: str = ".png") -> str:
          AKTO + 10 -> AKTO010.png
     """
     return f"{stem}0{page_num}{ext}"
+
+
+_georef_cache: Dict[Path, Optional[dict]] = {}
+
+
+def extract_georef_from_pdf(pdf_path: Path) -> Optional[dict]:
+    """
+    Extract Adobe / OGC Geospatial PDF Viewport (/VP) metadata directly
+    from an official FAA d-TPP PDF page and compute top-left (Lat1, Long1)
+    and bottom-right (Lat2, Long2) geographic coordinates for Dynon / EFB.
+    """
+    if not pdf_path or not pdf_path.is_file():
+        return None
+
+    if pdf_path in _georef_cache:
+        return _georef_cache[pdf_path]
+
+    try:
+        doc = pymupdf.open(pdf_path)
+        if len(doc) == 0:
+            doc.close()
+            _georef_cache[pdf_path] = None
+            return None
+
+        page = doc[0]
+        keys = doc.xref_get_keys(page.xref)
+        if "VP" not in keys:
+            doc.close()
+            _georef_cache[pdf_path] = None
+            return None
+
+        vp_str = doc.xref_get_key(page.xref, "VP")[1]
+        page_w = float(page.rect.width)
+        page_h = float(page.rect.height)
+        doc.close()
+
+        gpts_m = re.search(r"/GPTS\s*\[([^\]]+)\]", vp_str)
+        bbox_m = re.search(r"/BBox\s*\[([^\]]+)\]", vp_str)
+        if not gpts_m or not bbox_m:
+            _georef_cache[pdf_path] = None
+            return None
+
+        gpts = [float(v) for v in gpts_m.group(1).split()]
+        bbox = [float(v) for v in bbox_m.group(1).split()]
+        lpts_m = re.search(r"/LPTS\s*\[([^\]]+)\]", vp_str)
+        lpts = [float(v) for v in lpts_m.group(1).split()] if lpts_m else [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9]
+
+        bx0, by0, bx1, by1 = bbox
+        bw = bx1 - bx0
+        bh = by1 - by0
+        if bw <= 0 or bh <= 0 or len(gpts) < 8 or len(lpts) < 8:
+            _georef_cache[pdf_path] = None
+            return None
+
+        lat0, lon0 = gpts[0], gpts[1]  # BL
+        lat1, lon1 = gpts[2], gpts[3]  # BR
+        lat2, lon2 = gpts[4], gpts[5]  # TR
+        lat3, lon3 = gpts[6], gpts[7]  # TL
+
+        cm_m = re.search(r"\"Central_Meridian\",\s*([-\d\.]+)", vp_str)
+        lat_o_m = re.search(r"\"Latitude_Of_Origin\",\s*([-\d\.]+)", vp_str)
+        sp1_m = re.search(r"\"Standard_Parallel_1\",\s*([-\d\.]+)", vp_str)
+        sp2_m = re.search(r"\"Standard_Parallel_2\",\s*([-\d\.]+)", vp_str)
+
+        if cm_m and lat_o_m and sp1_m and sp2_m:
+            cm = float(cm_m.group(1))
+            lat_o = float(lat_o_m.group(1))
+            sp1 = float(sp1_m.group(1))
+            sp2 = float(sp2_m.group(1))
+
+            def lcc_fwd(lat, lon):
+                a = 6378137.0
+                f = 1 / 298.257222101
+                e = math.sqrt(2 * f - f * f)
+                r_lat, r_lon = math.radians(lat), math.radians(lon)
+                r_sp1, r_sp2 = math.radians(sp1), math.radians(sp2)
+                r_lat0, r_lon0 = math.radians(lat_o), math.radians(cm)
+
+                def m_fn(phi):
+                    return math.cos(phi) / math.sqrt(1 - e * e * math.sin(phi) ** 2)
+
+                def t_fn(phi):
+                    return math.tan(math.pi / 4 - phi / 2) / (
+                        (1 - e * math.sin(phi)) / (1 + e * math.sin(phi))
+                    ) ** (e / 2)
+
+                m1, m2 = m_fn(r_sp1), m_fn(r_sp2)
+                t1, t2, t0 = t_fn(r_sp1), t_fn(r_sp2), t_fn(r_lat0)
+                n = (math.log(m1) - math.log(m2)) / (math.log(t1) - math.log(t2))
+                F = m1 / (n * (t1**n))
+                rho0 = a * F * (t0**n)
+                t = t_fn(r_lat)
+                rho = a * F * (t**n)
+                theta = n * (r_lon - r_lon0)
+                return rho * math.sin(theta), rho0 - rho * math.cos(theta)
+
+            def lcc_inv(x, y):
+                a = 6378137.0
+                f = 1 / 298.257222101
+                e = math.sqrt(2 * f - f * f)
+                r_sp1, r_sp2 = math.radians(sp1), math.radians(sp2)
+                r_lat0, r_lon0 = math.radians(lat_o), math.radians(cm)
+
+                def m_fn(phi):
+                    return math.cos(phi) / math.sqrt(1 - e * e * math.sin(phi) ** 2)
+
+                def t_fn(phi):
+                    return math.tan(math.pi / 4 - phi / 2) / (
+                        (1 - e * math.sin(phi)) / (1 + e * math.sin(phi))
+                    ) ** (e / 2)
+
+                m1, m2 = m_fn(r_sp1), m_fn(r_sp2)
+                t1, t2, t0 = t_fn(r_sp1), t_fn(r_sp2), t_fn(r_lat0)
+                n = (math.log(m1) - math.log(m2)) / (math.log(t1) - math.log(t2))
+                F = m1 / (n * (t1**n))
+                rho0 = a * F * (t0**n)
+                rho = math.copysign(math.sqrt(x * x + (rho0 - y) ** 2), n)
+                theta = math.atan2(x, rho0 - y)
+                t = (rho / (a * F)) ** (1 / n)
+                phi = math.pi / 2 - 2 * math.atan(t)
+                for _ in range(5):
+                    con = e * math.sin(phi)
+                    dphi = math.pi / 2 - 2 * math.atan(
+                        t * ((1 - con) / (1 + con)) ** (e / 2)
+                    ) - phi
+                    phi += dphi
+                    if abs(dphi) < 1e-10:
+                        break
+                return math.degrees(phi), math.degrees(r_lon0 + theta / n)
+
+            x0, y0 = lcc_fwd(lat0, lon0)
+            x2, y2 = lcc_fwd(lat2, lon2)
+
+            dx_per_lpts = (x2 - x0) / (lpts[4] - lpts[0])
+            dy_per_lpts = (y2 - y0) / (lpts[5] - lpts[1])
+
+            lpts_left = -bx0 / bw
+            lpts_right = (page_w - bx0) / bw
+            lpts_bottom = -by0 / bh
+            lpts_top = (page_h - by0) / bh
+
+            x_left = x0 + (lpts_left - lpts[0]) * dx_per_lpts
+            x_right = x0 + (lpts_right - lpts[0]) * dx_per_lpts
+            y_bottom = y0 + (lpts_bottom - lpts[1]) * dy_per_lpts
+            y_top = y0 + (lpts_top - lpts[1]) * dy_per_lpts
+
+            res_lat1, res_lon1 = lcc_inv(x_left, y_top)
+            res_lat2, res_lon2 = lcc_inv(x_right, y_bottom)
+        else:
+            lpts_span_x = lpts[4] - lpts[0]
+            lpts_span_y = lpts[5] - lpts[1]
+            lpts_left = -bx0 / bw
+            lpts_right = (page_w - bx0) / bw
+            lpts_bottom = -by0 / bh
+            lpts_top = (page_h - by0) / bh
+
+            dlat_dy = (lat3 - lat0) / lpts_span_y
+            dlon_dx = (lon1 - lon0) / lpts_span_x
+
+            res_lat1 = lat0 + (lpts_top - lpts[1]) * dlat_dy
+            res_lon1 = lon0 + (lpts_left - lpts[0]) * dlon_dx
+            res_lat2 = lat0 + (lpts_bottom - lpts[1]) * dlat_dy
+            res_lon2 = lon0 + (lpts_right - lpts[0]) * dlon_dx
+
+        res = {
+            "Lat1": f"{res_lat1:.7f}",
+            "Long1": f"{res_lon1:.7f}",
+            "Lat2": f"{res_lat2:.7f}",
+            "Long2": f"{res_lon2:.7f}",
+            "X1": "0.0",
+            "Y1": "0.0",
+            "X2": "1.0",
+            "Y2": "1.0",
+            "Orientation": "0.0",
+            "Draw_Left": "0.0",
+            "Draw_Top": "0.0",
+            "Draw_Right": "1.0",
+            "Draw_Bottom": "1.0",
+        }
+        _georef_cache[pdf_path] = res
+        return res
+    except Exception:
+        _georef_cache[pdf_path] = None
+        return None
 
 
 def render_plate_to_png(
@@ -675,19 +860,31 @@ def build_chartdata(
                     amdt_date_raw = rec_el.findtext("amdtdate") or ""
                     last_changed = parse_amdtdate(amdt_date_raw, fallback=start_date)
 
-                    # Georeferencing (if reference DB was provided)
-                    georef = ref_georef.get((ident, orig_chart_name.upper())) or ref_georef.get((apt_id, orig_chart_name.upper()))
+                    # Georeferencing: Prioritize native extraction from official FAA PDF (/VP dictionary)
+                    src_pdf_path = pdf_map.get(pdf_name_u)
+                    georef = None
+                    if src_pdf_path:
+                        georef = extract_georef_from_pdf(src_pdf_path)
+
+                    # Fallback to optional reference DB (e.g. for airport diagrams without /VP)
+                    if not georef and ref_georef:
+                        georef = ref_georef.get((ident, orig_chart_name.upper())) or ref_georef.get((apt_id, orig_chart_name.upper()))
+
                     if georef:
                         matched_georef_count += 1
-                        lat1, long1 = georef["Lat1"], georef["Long1"]
-                        lat2, long2 = georef["Lat2"], georef["Long2"]
-                        x1, y1 = georef["X1"], georef["Y1"]
-                        x2, y2 = georef["X2"], georef["Y2"]
-                        orient = georef["Orientation"]
-                        d_left, d_right = georef["Draw_Left"], georef["Draw_Right"]
-                        d_top, d_bottom = georef["Draw_Top"], georef["Draw_Bottom"]
-                        v_x, v_y = georef["ValidWithinX"], georef["ValidWithinY"]
-                        v_rad, exc_areas = georef["ValidWithinRadius"], georef["ExcludeAreas"]
+                        lat1, long1 = str(georef["Lat1"]), str(georef["Long1"])
+                        lat2, long2 = str(georef["Lat2"]), str(georef["Long2"])
+                        x1 = str(georef.get("X1") if georef.get("X1") is not None else "0.0")
+                        y1 = str(georef.get("Y1") if georef.get("Y1") is not None else "0.0")
+                        x2 = str(georef.get("X2") if georef.get("X2") is not None else "1.0")
+                        y2 = str(georef.get("Y2") if georef.get("Y2") is not None else "1.0")
+                        orient = str(georef.get("Orientation") if georef.get("Orientation") is not None else "0.0")
+                        d_left = str(georef.get("Draw_Left") if georef.get("Draw_Left") is not None else "0.0")
+                        d_right = str(georef.get("Draw_Right") if georef.get("Draw_Right") is not None else "1.0")
+                        d_top = str(georef.get("Draw_Top") if georef.get("Draw_Top") is not None else "0.0")
+                        d_bottom = str(georef.get("Draw_Bottom") if georef.get("Draw_Bottom") is not None else "1.0")
+                        v_x, v_y = georef.get("ValidWithinX"), georef.get("ValidWithinY")
+                        v_rad, exc_areas = georef.get("ValidWithinRadius"), georef.get("ExcludeAreas")
                     else:
                         lat1 = long1 = lat2 = long2 = None
                         x1 = y1 = x2 = y2 = None
@@ -1200,6 +1397,7 @@ def build_chartdata(
         print(f"✂️  Multi-Page Split Pages: {split_pages_count:,}")
     print(f"🛩️  Total Airports:        {len(airports_to_insert):,}")
     print(f"📊 Total Charts in DB:    {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert)-afd_charts_count:,}, AFD: {afd_charts_count:,})")
+    print(f"🌐 Georeferenced Charts:  {matched_georef_count:,} (extracted from PDF / georeferenced)")
     print(f"⚡ File Processing Time:  {link_elapsed:.2f}s")
     print(f"⏱️  Total Elapsed Time:    {total_elapsed:.2f}s")
     print("=" * 65 + "\n")
@@ -1216,6 +1414,7 @@ def build_chartdata(
         "valid_dates": (start_date, end_date),
         "total_airports": len(airports_to_insert),
         "total_charts": len(charts_to_insert),
+        "georeferenced_charts": matched_georef_count,
         "afd_charts_count": afd_charts_count,
         "completed_files": completed if output_format == "png" else (linked_count + split_pages_count),
         "errors": errors if output_format == "png" else missing_count,
