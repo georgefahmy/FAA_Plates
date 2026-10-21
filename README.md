@@ -118,21 +118,45 @@ The Web UI features two distinct operation modes:
 
 ---
 
-## 📦 Standalone Airmate ChartData Recreator (`recreate_airmate_chartdata.py`)
+## 📦 Standalone Airmate / Dynon Avionics ChartData Recreator (`recreate_airmate_chartdata.py`)
 
-Rebuilds an entire Airmate-compatible `ChartData` structure (SQLite database + single-page PDF folder) **100% standalone** from official FAA source data (`d-TPP_Metafile.xml` + PDF volumes `DDTPPA`..`E`), with zero dependency on proprietary Airmate reference data:
+Rebuilds an entire Airmate and **Dynon Avionics SkyView** compatible `ChartData` structure (SQLite database + single-page PNG or PDF folder) **100% standalone** from official FAA source data (`d-TPP_Metafile.xml` + PDF volumes `DDTPPA`..`E`), with zero dependency on proprietary reference data.
+
+### 1. Dynon Avionics Compatible PNG Generation (Default)
+
+Dynon SkyView displays georeferenced approach plates and airport diagrams as raster PNG images. You can configure whether to generate **Enhanced PNGs** (with 4-color tactical briefings on IAC approach plates) or **Non-Enhanced PNGs**:
 
 ```bash
+# Generate Dynon-compatible folder with Enhanced PNGs (4-color briefing for IAC):
 ~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
-  --xml-path /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml \
-  --faa-dir /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data \
-  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData
+  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --format png --enhanced --workers 8
+
+# Generate Dynon-compatible folder with Non-Enhanced / Standard clean PNGs:
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --format png --non-enhanced --workers 8
+
+# Quick validation test on first 20 plates:
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --output-dir /tmp/test_chartdata --format png --limit 20
+```
+
+### 2. FAA Vector PDF Generation
+
+```bash
+# Generate single-page vector PDFs:
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --format pdf
 ```
 
 ### Key Output Features:
-- **Strict Single-Page PDFs:** Multi-page FAA booklets (Takeoff Minimums, Alternate Minimums, etc.) are automatically split into individual numbered single-page PDFs (`EC1ALT01.PDF`, `EC1ALT02.PDF`, etc.) and indexed by vector text matching.
-- **Relational `Plates.sqlite`:** Creates SQLite tables (`Airports`, `Charts`, `Countries`, `Regions`) mapping 5,294 airports and 30,145 charts.
-- **Standardized Folder Layout:** Produces `Plates/Plates.sqlite` and `Plates/US/` containing 22,357 single-page vector PDFs ready for EFBs.
+- **Dynon SkyView Raster Compatibility:** Output format defaults to `.png` with configurable DPI (default: 200 DPI, giving ~1076x1650 px resolution matching SkyView display standards).
+- **Tactical Briefing Option:** When `--enhanced` is active, all IAC/IAP approach plates are rendered with non-destructive 4-color tactical briefing overlays, while APD diagrams, DP departures, STARs, and minimums are rendered as clean, crisp standard PNGs.
+- **Strict Single-Page Splitting:** Multi-page FAA booklets (Takeoff Minimums, Alternate Minimums, etc.) are automatically split into individual numbered single-page charts (`EC1ALT01.png`, `EC1ALT02.png`, etc.) and indexed by vector text matching.
+- **Relational `Plates.sqlite`:** Creates SQLite tables (`Airports`, `Charts`, `Countries`, `Regions`) mapping 5,294 airports and 30,145 charts, with `Charts.File_Name` automatically aligned with disk extensions (`.png` or `.PDF`).
+- **Standardized Folder Layout:** Produces `Plates/Plates.sqlite` and `Plates/US/` containing all plates ready for USB transfer to Dynon Avionics SkyView or mobile EFBs.
 
 ---
 

@@ -30,6 +30,7 @@ import sqlite3
 import sys
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -41,6 +42,11 @@ except ImportError:
     except ImportError:
         print("[!] Error: PyMuPDF ('pymupdf' or 'fitz') is required. Install via: pip install pymupdf")
         sys.exit(1)
+
+try:
+    from cli import enhance_pdf_plate
+except Exception:
+    enhance_pdf_plate = None
 
 
 DEFAULT_XML_PATH = Path("/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml")
@@ -92,15 +98,60 @@ def parse_amdtdate(s: str, fallback: str = "") -> str:
     return fallback
 
 
-def format_page_filename(stem: str, page_num: int, ext: str = ".PDF") -> str:
+def format_page_filename(stem: str, page_num: int, ext: str = ".png") -> str:
     """
     Format single-page filename according to standard 01, 02 sequencing:
-    e.g. EC1ALT + 1 -> EC1ALT01.PDF
-         EC1ALT + 5 -> EC1ALT05.PDF
-         SW2TO + 29 -> SW2TO029.PDF
-         AKTO + 10 -> AKTO010.PDF
+    e.g. EC1ALT + 1 -> EC1ALT01.png (or .PDF)
+         EC1ALT + 5 -> EC1ALT05.png
+         SW2TO + 29 -> SW2TO029.png
+         AKTO + 10 -> AKTO010.png
     """
     return f"{stem}0{page_num}{ext}"
+
+
+def render_plate_to_png(
+    src_path: Path,
+    dst_path: Path,
+    page_idx: int = 0,
+    is_iac: bool = False,
+    enhanced: bool = False,
+    dpi: int = 200,
+) -> bool:
+    """
+    Render a single PDF page to a crisp PNG image.
+    If `enhanced` and `is_iac`, applies the 4-color tactical briefing overlay.
+    Otherwise, renders crisp standard raster via PyMuPDF at specified DPI.
+    Safe atomic replacement ensures files are never corrupted.
+    """
+    if dst_path.exists() and dst_path.stat().st_size > 0:
+        return True
+
+    try:
+        if enhanced and is_iac and enhance_pdf_plate is not None:
+            try:
+                dpi_scale = max(1.5, dpi / 72.0)
+                comp, _, _, _, _ = enhance_pdf_plate(src_path, dpi_scale=dpi_scale)
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = dst_path.with_name(f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}")
+                comp.save(tmp_path, format="PNG")
+                tmp_path.replace(dst_path)
+                return True
+            except Exception:
+                # Fallback to standard PyMuPDF render if enhancement encounters unusual PDF vector structure
+                pass
+
+        doc = pymupdf.open(src_path)
+        page = doc[page_idx]
+        pix = page.get_pixmap(dpi=dpi, alpha=False)
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dst_path.with_name(f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}")
+        pix.save(str(tmp_path))
+        doc.close()
+        tmp_path.replace(dst_path)
+        return True
+    except Exception as e:
+        print(f"[!] Error rendering {src_path} (p.{page_idx}) -> {dst_path}: {e}")
+        return False
 
 
 class FAABookletIndex:
@@ -301,13 +352,19 @@ def build_chartdata(
     faa_data_dir: Path,
     output_dir: Path,
     ref_db_path: Optional[Path] = None,
+    output_format: str = "png",
+    png_mode: str = "enhanced",
+    dpi: int = 200,
+    workers: int = 8,
     link_mode: str = "hardlink",
     include_afd: bool = True,
     chart_code_style: str = "airmate",
     clean: bool = False,
+    limit: Optional[int] = None,
 ) -> None:
     """Main execution routine to build the ChartData directory and Plates.sqlite strictly from FAA data."""
     start_total_t = time.time()
+    target_ext = ".png" if output_format == "png" else ".PDF"
 
     if not xml_path.is_file():
         raise FileNotFoundError(f"d-TPP XML metafile not found at: {xml_path}")
@@ -467,7 +524,7 @@ def build_chartdata(
     used_airport_ids: Set[int] = set()
     ident_to_id: Dict[str, int] = {}
 
-    single_page_needed: Set[str] = set()
+    single_page_needed: Dict[str, Tuple[str, bool]] = {}
     multi_page_needed: Set[str] = set()
 
     total_xml_records = 0
@@ -581,16 +638,25 @@ def build_chartdata(
                         orient = d_left = d_right = d_top = d_bottom = None
                         v_x = v_y = v_rad = exc_areas = None
 
+                    stem, orig_ext = os.path.splitext(pdf_name)
+                    chart_target_name = f"{stem}{target_ext}"
+                    is_iac = chart_code in ("IAC", "IAP", "DAU")
+
                     # Handle Single-Page vs Multi-Page PDF
                     if page_cnt <= 1:
-                        single_page_needed.add(pdf_name)
+                        if pdf_name_u in single_page_needed:
+                            curr_tname, curr_iac = single_page_needed[pdf_name_u]
+                            single_page_needed[pdf_name_u] = (chart_target_name, curr_iac or is_iac)
+                        else:
+                            single_page_needed[pdf_name_u] = (chart_target_name, is_iac)
+
                         charts_to_insert.append(
                             (
                                 str(airports_id),
                                 chart_code,
                                 chart_seq,
                                 orig_chart_name,
-                                pdf_name,
+                                chart_target_name,
                                 civil,
                                 None,
                                 faanfd18,
@@ -610,7 +676,6 @@ def build_chartdata(
                     else:
                         # Multi-page PDF: split into single-page items
                         multi_page_needed.add(pdf_name)
-                        stem, ext = os.path.splitext(pdf_name)
                         stem_u = stem.upper()
 
                         # Check reference DB first if explicitly provided
@@ -618,14 +683,14 @@ def build_chartdata(
 
                         if ref_entries:
                             for ref_cname, ref_fname in ref_entries:
-                                target_pdf_name = re.sub(r"\.[pP][nN][gG]$", ext, ref_fname)
+                                target_chart_name = re.sub(r"\.[pP][dD][fF]$|\.[pP][nN][gG]$", target_ext, ref_fname)
                                 charts_to_insert.append(
                                     (
                                         str(airports_id),
                                         chart_code,
                                         chart_seq,
                                         ref_cname,
-                                        target_pdf_name,
+                                        target_chart_name,
                                         civil,
                                         None,
                                         faanfd18,
@@ -651,7 +716,7 @@ def build_chartdata(
                                 apt_ident=apt_id,
                                 icao_ident=icao_id,
                             )
-                            target_pdf_name = format_page_filename(stem, matched_p, ext)
+                            target_chart_name = format_page_filename(stem, matched_p, target_ext)
                             p_chart_name = f"{orig_chart_name} p.{matched_p}"
                             charts_to_insert.append(
                                 (
@@ -659,7 +724,7 @@ def build_chartdata(
                                     chart_code,
                                     chart_seq,
                                     p_chart_name,
-                                    target_pdf_name,
+                                    target_chart_name,
                                     civil,
                                     None,
                                     faanfd18,
@@ -723,9 +788,12 @@ def build_chartdata(
 
                         pdf_name_u = pdf_name.upper()
                         page_cnt = page_counts.get(pdf_name_u, 1)
+                        stem, _ = os.path.splitext(pdf_name)
+                        target_afd_name = f"{stem}{target_ext}"
 
                         if page_cnt <= 1:
-                            single_page_needed.add(pdf_name)
+                            if pdf_name_u not in single_page_needed:
+                                single_page_needed[pdf_name_u] = (target_afd_name, False)
                             afd_charts_count += 1
                             charts_to_insert.append(
                                 (
@@ -733,7 +801,7 @@ def build_chartdata(
                                     "AFD",
                                     "70100",
                                     "AFD",
-                                    pdf_name,
+                                    target_afd_name,
                                     None, None, None, None,
                                     None, None, None, None,
                                     None, None, None, None,
@@ -749,9 +817,8 @@ def build_chartdata(
                             )
                         else:
                             multi_page_needed.add(pdf_name)
-                            stem, ext = os.path.splitext(pdf_name)
                             for p in range(1, page_cnt + 1):
-                                target_pdf_name = format_page_filename(stem, p, ext)
+                                target_page_name = format_page_filename(stem, p, target_ext)
                                 afd_charts_count += 1
                                 charts_to_insert.append(
                                     (
@@ -759,7 +826,7 @@ def build_chartdata(
                                         "AFD",
                                         "70100",
                                         f"AFD p.{p}",
-                                        target_pdf_name,
+                                        target_page_name,
                                         None, None, None, None,
                                         None, None, None, None,
                                         None, None, None, None,
@@ -811,82 +878,157 @@ def build_chartdata(
     print(f"[+] Successfully wrote database: {db_path} ({db_path.stat().st_size:,} bytes)")
 
     # -------------------------------------------------------------
-    # Place Single-Page PDFs into Plates/US/
+    # Place Chart Files into Plates/US/ (PNG or PDF)
     # -------------------------------------------------------------
     us_dir.mkdir(parents=True, exist_ok=True)
     t_link_start = time.time()
     linked_count = 0
     split_pages_count = 0
     missing_count = 0
+    completed = 0
+    errors = 0
 
-    # 1. Place genuine single-page PDFs via link/copy
-    print(f"[*] Placing {len(single_page_needed):,} single-page PDFs into {us_dir} via {link_mode} ...")
-    for pdf_name in single_page_needed:
-        src_path = pdf_map.get(pdf_name.upper())
-        dst_path = us_dir / pdf_name
+    if output_format == "png":
+        print(f"[*] Preparing Dynon-compatible PNG generation (Mode: {png_mode.upper()}, DPI: {dpi}, Workers: {workers}) ...")
+        render_tasks = []
 
-        if dst_path.exists():
-            linked_count += 1
-            continue
+        # 1. Single-page chart tasks
+        for pdf_u, (target_name, is_iac) in single_page_needed.items():
+            src_path = pdf_map.get(pdf_u)
+            if not src_path or not src_path.is_file():
+                missing_count += 1
+                continue
+            dst_path = us_dir / target_name
+            render_tasks.append((src_path, dst_path, 0, is_iac, png_mode == "enhanced", dpi, None))
 
-        if not src_path or not src_path.is_file():
-            missing_count += 1
-            continue
-
-        try:
-            if link_mode == "hardlink":
-                try:
-                    os.link(src_path, dst_path)
-                except OSError:
-                    shutil.copy2(src_path, dst_path)
-            elif link_mode == "symlink":
-                os.symlink(src_path, dst_path)
-            elif link_mode == "copy":
-                shutil.copy2(src_path, dst_path)
-            linked_count += 1
-        except Exception as e:
-            print(f"[!] Error linking {src_path} -> {dst_path}: {e}")
-            missing_count += 1
-
-    # 2. Split multi-page PDFs into strictly single-page PDFs
-    print(f"[*] Splitting {len(multi_page_needed):,} multi-page PDFs into single-page PDFs (e.g. EC1ALT01.PDF, EC1ALT02.PDF) ...")
-    for pdf_name in multi_page_needed:
-        src_path = pdf_map.get(pdf_name.upper())
-        if not src_path or not src_path.is_file():
-            missing_count += 1
-            continue
-
-        try:
-            doc = pymupdf.open(src_path)
-            num_pages = len(doc)
-            stem, ext = os.path.splitext(pdf_name)
-
+        # 2. Multi-page booklet tasks
+        for pdf_name in multi_page_needed:
+            src_path = pdf_map.get(pdf_name.upper())
+            if not src_path or not src_path.is_file():
+                missing_count += 1
+                continue
+            stem, _ = os.path.splitext(pdf_name)
+            num_pages = page_counts.get(pdf_name.upper(), 1)
             for page_idx in range(num_pages):
                 page_num = page_idx + 1
-                target_name = format_page_filename(stem, page_num, ext)
-                target_path = us_dir / target_name
+                target_name = format_page_filename(stem, page_num, target_ext)
+                dst_path = us_dir / target_name
+                twodigit_name = f"{stem}{page_num:02d}{target_ext}"
+                alias_path = us_dir / twodigit_name if twodigit_name != target_name else None
+                render_tasks.append((src_path, dst_path, page_idx, False, False, dpi, alias_path))
 
-                if not target_path.exists():
-                    page_doc = pymupdf.open()
-                    page_doc.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
-                    page_doc.save(str(target_path), garbage=3, deflate=True)
-                    page_doc.close()
+        if limit and limit > 0:
+            print(f"[*] Limiting PNG generation to first {limit} tasks (--limit {limit})")
+            render_tasks = render_tasks[:limit]
 
-                twodigit_name = f"{stem}{page_num:02d}{ext}"
-                twodigit_path = us_dir / twodigit_name
-                if twodigit_name != target_name and not twodigit_path.exists():
+        total_tasks = len(render_tasks)
+        print(f"[*] Rendering {total_tasks:,} PNG plates using {workers} concurrent worker threads ...")
+
+        def _worker_fn(task):
+            src_p, dst_p, p_idx, is_iac, enh, d_dpi, alias_p = task
+            ok = render_plate_to_png(src_p, dst_p, page_idx=p_idx, is_iac=is_iac, enhanced=enh, dpi=d_dpi)
+            if ok and alias_p and not alias_p.exists():
+                try:
+                    os.link(str(dst_p), str(alias_p))
+                except OSError:
                     try:
-                        os.link(str(target_path), str(twodigit_path))
-                    except OSError:
+                        shutil.copy2(dst_p, alias_p)
+                    except Exception:
                         pass
+            return ok
 
-                split_pages_count += 1
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_worker_fn, task): task for task in render_tasks}
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res:
+                    completed += 1
+                else:
+                    errors += 1
 
-            doc.close()
-        except Exception as e:
-            print(f"[!] Error splitting multi-page PDF {src_path}: {e}")
+                if completed % 100 == 0 or completed == total_tasks:
+                    el = time.time() - t_link_start
+                    sp = completed / el if el > 0 else 0
+                    eta = (total_tasks - completed) / sp if sp > 0 else 0
+                    print(
+                        f"\r[*] Rendered {completed:,}/{total_tasks:,} PNGs ({completed/total_tasks*100:.1f}%) "
+                        f"— {sp:.1f} pl/s — ETA {int(eta)}s",
+                        end="",
+                        flush=True,
+                    )
 
-    link_elapsed = time.time() - t_link_start
+        print()
+        link_elapsed = time.time() - t_link_start
+    else:
+        # PDF format: Place genuine single-page PDFs via link/copy
+        print(f"[*] Placing {len(single_page_needed):,} single-page PDFs into {us_dir} via {link_mode} ...")
+        for pdf_name_u, (target_name, _) in single_page_needed.items():
+            src_path = pdf_map.get(pdf_name_u)
+            dst_path = us_dir / target_name
+
+            if dst_path.exists():
+                linked_count += 1
+                continue
+
+            if not src_path or not src_path.is_file():
+                missing_count += 1
+                continue
+
+            try:
+                if link_mode == "hardlink":
+                    try:
+                        os.link(src_path, dst_path)
+                    except OSError:
+                        shutil.copy2(src_path, dst_path)
+                elif link_mode == "symlink":
+                    os.symlink(src_path, dst_path)
+                elif link_mode == "copy":
+                    shutil.copy2(src_path, dst_path)
+                linked_count += 1
+            except Exception as e:
+                print(f"[!] Error linking {src_path} -> {dst_path}: {e}")
+                missing_count += 1
+
+        # Split multi-page PDFs into strictly single-page PDFs
+        print(f"[*] Splitting {len(multi_page_needed):,} multi-page PDFs into single-page PDFs (e.g. EC1ALT01.PDF, EC1ALT02.PDF) ...")
+        for pdf_name in multi_page_needed:
+            src_path = pdf_map.get(pdf_name.upper())
+            if not src_path or not src_path.is_file():
+                missing_count += 1
+                continue
+
+            try:
+                doc = pymupdf.open(src_path)
+                num_pages = len(doc)
+                stem, ext = os.path.splitext(pdf_name)
+
+                for page_idx in range(num_pages):
+                    page_num = page_idx + 1
+                    target_name = format_page_filename(stem, page_num, target_ext)
+                    target_path = us_dir / target_name
+
+                    if not target_path.exists():
+                        page_doc = pymupdf.open()
+                        page_doc.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
+                        page_doc.save(str(target_path), garbage=3, deflate=True)
+                        page_doc.close()
+
+                    twodigit_name = f"{stem}{page_num:02d}{target_ext}"
+                    twodigit_path = us_dir / twodigit_name
+                    if twodigit_name != target_name and not twodigit_path.exists():
+                        try:
+                            os.link(str(target_path), str(twodigit_path))
+                        except OSError:
+                            pass
+
+                    split_pages_count += 1
+
+                doc.close()
+            except Exception as e:
+                print(f"[!] Error splitting multi-page PDF {src_path}: {e}")
+
+        link_elapsed = time.time() - t_link_start
+
     total_elapsed = time.time() - start_total_t
 
     print("\n" + "=" * 65)
@@ -894,19 +1036,64 @@ def build_chartdata(
     print("=" * 65)
     print(f"📁 Output Directory:      {output_dir}")
     print(f"📦 Plates Database:       {db_path}")
-    print(f"📄 Target PDF Directory:   {us_dir}")
+    print(f"📄 Chart Files Directory: {us_dir}")
+    print(f"🎨 Output Format:         {output_format.upper()} ({'Dynon Avionics SkyView compatible' if output_format == 'png' else 'FAA Vector PDF'})")
+    if output_format == "png":
+        print(f"✨ PNG Enhancement Mode:  {png_mode.upper()} (DPI: {dpi})")
+        print(f"🖼️  Total PNGs Generated:  {completed:,} (Errors: {errors})")
+    else:
+        print(f"📑 Single-Page PDFs:      {linked_count:,}")
+        print(f"✂️  Multi-Page Split Pages: {split_pages_count:,}")
     print(f"🛩️  Total Airports:        {len(airports_to_insert):,}")
-    print(f"📊 Total Charts:          {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert)-afd_charts_count:,}, AFD: {afd_charts_count:,})")
-    print(f"📑 Single-Page PDFs Linked: {linked_count:,}")
-    print(f"✂️  Multi-Page Split Pages: {split_pages_count:,} from {len(multi_page_needed):,} multi-page files")
-    print(f"⚡ Processing Time:       {link_elapsed:.2f}s")
+    print(f"📊 Total Charts in DB:    {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert)-afd_charts_count:,}, AFD: {afd_charts_count:,})")
+    print(f"⚡ File Processing Time:  {link_elapsed:.2f}s")
     print(f"⏱️  Total Elapsed Time:    {total_elapsed:.2f}s")
     print("=" * 65 + "\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Recreate ChartData folder and Plates.sqlite strictly from official FAA PDFs and XML metadata."
+        description="Recreate Dynon-compatible ChartData folder and Plates.sqlite strictly from official FAA data."
+    )
+    parser.add_argument(
+        "--format",
+        choices=["png", "pdf"],
+        default="png",
+        help="Output plate file format: 'png' (default, required for Dynon Avionics SkyView) or 'pdf'",
+    )
+    parser.add_argument(
+        "--png-mode",
+        choices=["enhanced", "standard", "non-enhanced"],
+        default="enhanced",
+        help="PNG rendering mode: 'enhanced' (applies 4-color tactical briefing to IAC approach plates, default) or 'standard' / 'non-enhanced'",
+    )
+    parser.add_argument(
+        "--enhanced",
+        action="store_true",
+        help="Convenience flag: generate enhanced PNGs (same as --png-mode enhanced)",
+    )
+    parser.add_argument(
+        "--non-enhanced",
+        action="store_true",
+        help="Convenience flag: generate non-enhanced standard PNGs (same as --png-mode standard)",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=200,
+        help="Resolution in DPI for PNG rendering (default: 200, matching Dynon SkyView screen format)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of concurrent worker threads for PNG rendering (default: 8)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional limit on total charts to render (useful for quick validation)",
     )
     parser.add_argument(
         "--xml",
@@ -937,7 +1124,7 @@ def main() -> None:
         "--link-mode",
         choices=["hardlink", "copy", "symlink"],
         default="hardlink",
-        help="How to place PDFs in Plates/US/: 'hardlink' (instant, 0 extra disk space, default), 'copy' (independent files), 'symlink' (symbolic links)",
+        help="When --format pdf is selected: 'hardlink' (instant, 0 extra disk space, default), 'copy', or 'symlink'",
     )
     parser.add_argument(
         "--no-afd",
@@ -960,15 +1147,25 @@ def main() -> None:
 
     ref_db = args.reference_db if (args.reference_db and args.reference_db.is_file()) else None
 
+    # Resolve png_mode
+    png_mode = "standard" if args.non_enhanced else ("enhanced" if args.enhanced else args.png_mode)
+    if png_mode == "non-enhanced":
+        png_mode = "standard"
+
     build_chartdata(
         xml_path=args.xml,
         faa_data_dir=args.faa_data_dir,
         output_dir=args.output_dir,
         ref_db_path=ref_db,
+        output_format=args.format,
+        png_mode=png_mode,
+        dpi=args.dpi,
+        workers=args.workers,
         link_mode=args.link_mode,
         include_afd=not args.no_afd,
         chart_code_style=args.chart_code_style,
         clean=args.clean,
+        limit=args.limit,
     )
 
 
