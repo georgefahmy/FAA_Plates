@@ -31,8 +31,22 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+@dataclass
+class RecreateProgress:
+    stage: str  # "indexing", "parsing_xml", "writing_db", "rendering", "complete"
+    completed: int
+    total: int
+    speed_per_sec: float
+    elapsed_seconds: float
+    eta_seconds: float
+    message: str
+    current_item: Optional[str] = None
+    is_success: bool = True
+
 
 try:
     import pymupdf
@@ -116,6 +130,10 @@ def render_plate_to_png(
     is_iac: bool = False,
     enhanced: bool = False,
     dpi: int = 200,
+    aircraft_categories: Optional[List[str]] = None,
+    target_approaches: Optional[List[str]] = None,
+    enabled_colors: Optional[Set[str]] = None,
+    opacity_scale: float = 1.0,
 ) -> bool:
     """
     Render a single PDF page to a crisp PNG image.
@@ -130,7 +148,14 @@ def render_plate_to_png(
         if enhanced and is_iac and enhance_pdf_plate is not None:
             try:
                 dpi_scale = max(1.5, dpi / 72.0)
-                comp, _, _, _, _ = enhance_pdf_plate(src_path, dpi_scale=dpi_scale)
+                comp, _, _, _, _ = enhance_pdf_plate(
+                    src_path,
+                    dpi_scale=dpi_scale,
+                    aircraft_categories=aircraft_categories,
+                    target_approaches=target_approaches,
+                    enabled_colors=enabled_colors,
+                    opacity_scale=opacity_scale,
+                )
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path = dst_path.with_name(f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}")
                 comp.save(tmp_path, format="PNG")
@@ -361,7 +386,12 @@ def build_chartdata(
     chart_code_style: str = "airmate",
     clean: bool = False,
     limit: Optional[int] = None,
-) -> None:
+    aircraft_categories: Optional[List[str]] = None,
+    target_approaches: Optional[List[str]] = None,
+    enabled_colors: Optional[Set[str]] = None,
+    opacity_scale: float = 1.0,
+    progress_callback: Optional[Callable[[RecreateProgress], None]] = None,
+) -> dict:
     """Main execution routine to build the ChartData directory and Plates.sqlite strictly from FAA data."""
     start_total_t = time.time()
     target_ext = ".png" if output_format == "png" else ".PDF"
@@ -370,6 +400,19 @@ def build_chartdata(
         raise FileNotFoundError(f"d-TPP XML metafile not found at: {xml_path}")
     if not faa_data_dir.is_dir():
         raise NotADirectoryError(f"FAA PDF data directory not found at: {faa_data_dir}")
+
+    if progress_callback:
+        progress_callback(
+            RecreateProgress(
+                stage="indexing",
+                completed=0,
+                total=1,
+                speed_per_sec=0.0,
+                elapsed_seconds=0.0,
+                eta_seconds=0.0,
+                message=f"Scanning FAA PDF source directories in {faa_data_dir.name}...",
+            )
+        )
 
     # Index available PDFs on disk and check page counts
     pdf_map, page_counts = index_source_pdfs(faa_data_dir)
@@ -406,6 +449,19 @@ def build_chartdata(
         db_path.unlink()
 
     # Parse primary d-TPP XML
+    if progress_callback:
+        progress_callback(
+            RecreateProgress(
+                stage="parsing_xml",
+                completed=0,
+                total=1,
+                speed_per_sec=0.0,
+                elapsed_seconds=time.time() - start_total_t,
+                eta_seconds=0.0,
+                message=f"Parsing official FAA d-TPP Metafile ({xml_path.name})...",
+            )
+        )
+
     print(f"[*] Parsing official FAA d-TPP Metafile: {xml_path} ...")
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -844,6 +900,19 @@ def build_chartdata(
             print(f"[+] Added {afd_charts_count:,} AFD supplement charts from DCS.")
 
     # Insert into database
+    if progress_callback:
+        progress_callback(
+            RecreateProgress(
+                stage="writing_db",
+                completed=0,
+                total=1,
+                speed_per_sec=0.0,
+                elapsed_seconds=time.time() - start_total_t,
+                eta_seconds=0.0,
+                message=f"Writing SQLite database ({len(airports_to_insert):,} airports, {len(charts_to_insert):,} charts)...",
+            )
+        )
+
     print("[*] Writing SQLite database records ...")
     c.executemany("INSERT INTO Airports VALUES (?, ?, ?, ?, ?, ?, ?)", airports_to_insert)
     c.executemany(
@@ -926,7 +995,18 @@ def build_chartdata(
 
         def _worker_fn(task):
             src_p, dst_p, p_idx, is_iac, enh, d_dpi, alias_p = task
-            ok = render_plate_to_png(src_p, dst_p, page_idx=p_idx, is_iac=is_iac, enhanced=enh, dpi=d_dpi)
+            ok = render_plate_to_png(
+                src_p,
+                dst_p,
+                page_idx=p_idx,
+                is_iac=is_iac,
+                enhanced=enh,
+                dpi=d_dpi,
+                aircraft_categories=aircraft_categories,
+                target_approaches=target_approaches,
+                enabled_colors=enabled_colors,
+                opacity_scale=opacity_scale,
+            )
             if ok and alias_p and not alias_p.exists():
                 try:
                     os.link(str(dst_p), str(alias_p))
@@ -935,21 +1015,24 @@ def build_chartdata(
                         shutil.copy2(dst_p, alias_p)
                     except Exception:
                         pass
-            return ok
+            return ok, dst_p.name
 
+        last_cb_time = 0.0
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(_worker_fn, task): task for task in render_tasks}
             for fut in as_completed(futures):
-                res = fut.result()
+                res, dst_name = fut.result()
                 if res:
                     completed += 1
                 else:
                     errors += 1
 
+                now = time.time()
+                el = now - t_link_start
+                sp = completed / el if el > 0 else 0
+                eta = (total_tasks - completed) / sp if sp > 0 else 0
+
                 if completed % 100 == 0 or completed == total_tasks:
-                    el = time.time() - t_link_start
-                    sp = completed / el if el > 0 else 0
-                    eta = (total_tasks - completed) / sp if sp > 0 else 0
                     print(
                         f"\r[*] Rendered {completed:,}/{total_tasks:,} PNGs ({completed/total_tasks*100:.1f}%) "
                         f"— {sp:.1f} pl/s — ETA {int(eta)}s",
@@ -957,21 +1040,49 @@ def build_chartdata(
                         flush=True,
                     )
 
+                if progress_callback and (now - last_cb_time >= 0.12 or completed == total_tasks):
+                    last_cb_time = now
+                    progress_callback(
+                        RecreateProgress(
+                            stage="rendering",
+                            completed=completed,
+                            total=total_tasks,
+                            speed_per_sec=sp,
+                            elapsed_seconds=el,
+                            eta_seconds=eta,
+                            message=f"Rendered {dst_name}",
+                            current_item=dst_name,
+                            is_success=res,
+                        )
+                    )
+
         print()
         link_elapsed = time.time() - t_link_start
     else:
         # PDF format: Place genuine single-page PDFs via link/copy
-        print(f"[*] Placing {len(single_page_needed):,} single-page PDFs into {us_dir} via {link_mode} ...")
-        for pdf_name_u, (target_name, _) in single_page_needed.items():
+        single_items = list(single_page_needed.items())
+        multi_items = list(multi_page_needed)
+        if limit and limit > 0:
+            single_items = single_items[:limit]
+            multi_items = multi_items[:max(0, limit - len(single_items))]
+
+        total_pdf_tasks = len(single_items) + len(multi_items)
+        pdf_done = 0
+        last_cb_time = 0.0
+
+        print(f"[*] Placing {len(single_items):,} single-page PDFs into {us_dir} via {link_mode} ...")
+        for pdf_name_u, (target_name, _) in single_items:
             src_path = pdf_map.get(pdf_name_u)
             dst_path = us_dir / target_name
 
             if dst_path.exists():
                 linked_count += 1
+                pdf_done += 1
                 continue
 
             if not src_path or not src_path.is_file():
                 missing_count += 1
+                pdf_done += 1
                 continue
 
             try:
@@ -989,12 +1100,34 @@ def build_chartdata(
                 print(f"[!] Error linking {src_path} -> {dst_path}: {e}")
                 missing_count += 1
 
+            pdf_done += 1
+            now = time.time()
+            if progress_callback and (now - last_cb_time >= 0.12 or pdf_done == total_pdf_tasks):
+                last_cb_time = now
+                el = now - t_link_start
+                sp = pdf_done / el if el > 0 else 0
+                eta = (total_pdf_tasks - pdf_done) / sp if sp > 0 else 0
+                progress_callback(
+                    RecreateProgress(
+                        stage="linking",
+                        completed=pdf_done,
+                        total=total_pdf_tasks,
+                        speed_per_sec=sp,
+                        elapsed_seconds=el,
+                        eta_seconds=eta,
+                        message=f"Linked {target_name}",
+                        current_item=target_name,
+                        is_success=True,
+                    )
+                )
+
         # Split multi-page PDFs into strictly single-page PDFs
-        print(f"[*] Splitting {len(multi_page_needed):,} multi-page PDFs into single-page PDFs (e.g. EC1ALT01.PDF, EC1ALT02.PDF) ...")
-        for pdf_name in multi_page_needed:
+        print(f"[*] Splitting {len(multi_items):,} multi-page PDFs into single-page PDFs (e.g. EC1ALT01.PDF, EC1ALT02.PDF) ...")
+        for pdf_name in multi_items:
             src_path = pdf_map.get(pdf_name.upper())
             if not src_path or not src_path.is_file():
                 missing_count += 1
+                pdf_done += 1
                 continue
 
             try:
@@ -1027,6 +1160,27 @@ def build_chartdata(
             except Exception as e:
                 print(f"[!] Error splitting multi-page PDF {src_path}: {e}")
 
+            pdf_done += 1
+            now = time.time()
+            if progress_callback and (now - last_cb_time >= 0.12 or pdf_done == total_pdf_tasks):
+                last_cb_time = now
+                el = now - t_link_start
+                sp = pdf_done / el if el > 0 else 0
+                eta = (total_pdf_tasks - pdf_done) / sp if sp > 0 else 0
+                progress_callback(
+                    RecreateProgress(
+                        stage="linking",
+                        completed=pdf_done,
+                        total=total_pdf_tasks,
+                        speed_per_sec=sp,
+                        elapsed_seconds=el,
+                        eta_seconds=eta,
+                        message=f"Split booklet {pdf_name}",
+                        current_item=pdf_name,
+                        is_success=True,
+                    )
+                )
+
         link_elapsed = time.time() - t_link_start
 
     total_elapsed = time.time() - start_total_t
@@ -1049,6 +1203,41 @@ def build_chartdata(
     print(f"⚡ File Processing Time:  {link_elapsed:.2f}s")
     print(f"⏱️  Total Elapsed Time:    {total_elapsed:.2f}s")
     print("=" * 65 + "\n")
+
+    summary = {
+        "output_dir": output_dir,
+        "db_path": db_path,
+        "db_size": db_path.stat().st_size if db_path.exists() else 0,
+        "us_dir": us_dir,
+        "output_format": output_format,
+        "png_mode": png_mode,
+        "dpi": dpi,
+        "cycle": cycle,
+        "valid_dates": (start_date, end_date),
+        "total_airports": len(airports_to_insert),
+        "total_charts": len(charts_to_insert),
+        "afd_charts_count": afd_charts_count,
+        "completed_files": completed if output_format == "png" else (linked_count + split_pages_count),
+        "errors": errors if output_format == "png" else missing_count,
+        "file_time": link_elapsed,
+        "total_time": total_elapsed,
+    }
+
+    if progress_callback:
+        progress_callback(
+            RecreateProgress(
+                stage="complete",
+                completed=completed if output_format == "png" else total_pdf_tasks,
+                total=total_tasks if output_format == "png" else total_pdf_tasks,
+                speed_per_sec=(completed / link_elapsed) if (output_format == "png" and link_elapsed > 0) else 0.0,
+                elapsed_seconds=total_elapsed,
+                eta_seconds=0.0,
+                message="Recreation complete!",
+                is_success=True,
+            )
+        )
+
+    return summary
 
 
 def main() -> None:

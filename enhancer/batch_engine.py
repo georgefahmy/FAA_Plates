@@ -143,13 +143,16 @@ def discover_iac_plates(target_dir: Path | str) -> Tuple[List[IACPlateItem], str
             for row in cur.fetchall():
                 fname, cname, ccode, apt, icao, state = row
                 if fname:
-                    iac_metadata[fname.upper().strip()] = (
+                    fn_u = fname.upper().strip()
+                    val = (
                         cname or "",
                         ccode or "IAC",
                         apt or "",
                         icao or "",
                         state or "",
                     )
+                    iac_metadata[fn_u] = val
+                    iac_metadata[Path(fn_u).stem] = val
             conn.close()
             source_desc = f"SQLite Database: {sqlite_path} ({len(iac_metadata):,} IAC records)"
         except Exception as err:
@@ -171,25 +174,29 @@ def discover_iac_plates(target_dir: Path | str) -> Tuple[List[IACPlateItem], str
                         icao = (rec.findtext("icao_ident") or "").strip()
                         state = (rec.findtext("state_code") or "").strip()
                         if pdf_name:
-                            iac_metadata[pdf_name.upper()] = (cname, ccode, apt, icao, state)
+                            fn_u = pdf_name.upper().strip()
+                            val = (cname, ccode, apt, icao, state)
+                            iac_metadata[fn_u] = val
+                            iac_metadata[Path(fn_u).stem] = val
                 source_desc = f"FAA XML: {xml_path} ({len(iac_metadata):,} IAC records)"
             except Exception as err:
                 source_desc = f"XML parse error: {err}"
 
-    # Find all PDF files on disk inside root
-    pdf_files: List[Path] = []
-    for ext in ("*.pdf", "*.PDF"):
-        pdf_files.extend(root.rglob(ext))
+    # Find all PDF and PNG files on disk inside root
+    chart_files: List[Path] = []
+    for ext in ("*.pdf", "*.PDF", "*.png", "*.PNG"):
+        chart_files.extend(root.rglob(ext))
 
     # Deduplicate paths
-    unique_pdfs: Dict[Path, Path] = {p.resolve(): p for p in pdf_files}
+    unique_files: Dict[Path, Path] = {p.resolve(): p for p in chart_files}
 
-    # Match PDFs against IAC catalog
+    # Match files against IAC catalog
     matched_items: List[IACPlateItem] = []
-    for path in unique_pdfs.values():
+    for path in unique_files.values():
         name_u = path.name.upper()
-        if name_u in iac_metadata:
-            cname, ccode, apt, icao, state = iac_metadata[name_u]
+        stem_u = path.stem.upper()
+        if name_u in iac_metadata or stem_u in iac_metadata:
+            cname, ccode, apt, icao, state = iac_metadata.get(name_u) or iac_metadata[stem_u]
             matched_items.append(
                 IACPlateItem(
                     file_path=path,

@@ -25,11 +25,12 @@ from typing import List, Optional, Set, Tuple
 import streamlit as st
 from PIL import Image
 
-from enhancer.batch_engine import (
-    BatchProgress,
-    IACPlateItem,
-    discover_iac_plates,
-    run_batch_enhancement,
+from recreate_airmate_chartdata import (
+    DEFAULT_FAA_DATA_DIR,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_XML_PATH,
+    RecreateProgress,
+    build_chartdata,
 )
 from enhancer.briefing import generate_5a_briefing
 from enhancer.compositor import (
@@ -218,227 +219,244 @@ def render_dtpp_browser_panel() -> Tuple[Optional[bytes], bool, str]:
     return raw_bytes, True, stem
 
 
-def render_batch_enhancer_panel(
+def render_chartdata_generator_panel(
     selected_cats: List[str],
     selected_approaches: List[str],
     enabled_colors: Set[str],
     opacity_scale: float,
 ) -> None:
     """
-    Render the Batch Directory Enhancer interface, allowing users to pass an
-    entire directory (e.g. ChartData), scan for official IAC/IAP approach plates,
-    and apply the 4-Color Tactical Briefing vector overlay across all of them.
-    All non-IAC file types (APD, DP, STAR, MIN) are left 100% untouched.
+    Render the FAA ChartData & EFB Generator interface, allowing users to configure
+    and run recreate_airmate_chartdata directly from the Web UI.
     """
-    st.header("⚡ Batch Directory Enhancer — Instrument Approach Procedures (IAC Only)")
+    st.header("⚡ FAA ChartData & Plates Generator (Dynon PNG / Airmate PDF)")
     st.info(
-        "💡 **Targeted Enhancement:** Pass an extracted plates directory (e.g. `ChartData` containing `Plates.sqlite` or FAA XML). "
-        "The engine will automatically discover and batch-enhance **only** official Instrument Approach Procedure (`IAC` / `IAP`) vector PDF charts. "
-        "All other non-IAC charts (Airport Diagrams `APD`, Departures `DP`, STARs `STAR`, and Minimums `MIN`) are strictly preserved and left 100% untouched."
+        "💡 **Full EFB Package Generator:** Recreate the standardized `ChartData` directory tree "
+        "(`ChartData/Plates/Plates.sqlite` and `ChartData/Plates/US/`) strictly from official FAA data "
+        "(`d-TPP_Metafile.xml` + `DDTPPA..E` PDFs). "
+        "Outputs Dynon Avionics SkyView-compatible single-page PNGs (with optional 4-Color Tactical Briefing on IAC plates) "
+        "or pure single-page FAA Vector PDFs for mobile EFBs (Airmate)."
     )
 
-    col_path, col_scan = st.columns([4, 1.2])
-    with col_path:
-        default_dir = "/Users/GFahmy/Documents/RV-7/Airmate/ChartData"
-        target_dir_str = st.text_input(
-            "📁 Extracted Plates Directory",
-            value=st.session_state.get("batch_dir_input", default_dir),
-            placeholder="/Users/GFahmy/Documents/RV-7/Airmate/ChartData",
-            help="Path to ChartData, Plates, or Plates/US folder containing Plates.sqlite and PDF files",
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("📁 Source & Target Paths")
+        xml_path_str = st.text_input(
+            "FAA d-TPP XML Metafile",
+            value=st.session_state.get("cfg_xml_path", str(DEFAULT_XML_PATH)),
+            help="Path to d-TPP_Metafile.xml catalog",
         )
-        st.session_state["batch_dir_input"] = target_dir_str
+        st.session_state["cfg_xml_path"] = xml_path_str
 
-    with col_scan:
-        st.write("")
-        st.write("")
-        scan_btn = st.button("🔍 Scan Directory", width="stretch", type="secondary")
-
-    should_scan = (
-        scan_btn
-        or "batch_items" not in st.session_state
-        or st.session_state.get("batch_scanned_path") != target_dir_str
-    )
-
-    if should_scan:
-        p = Path(target_dir_str)
-        if not p.exists():
-            st.error(f"Directory not found on disk: `{p}`")
-            return
-        with st.spinner(f"Scanning `{p}` for IAC approach plates..."):
-            items, info = discover_iac_plates(p)
-            st.session_state["batch_items"] = items
-            st.session_state["batch_info"] = info
-            st.session_state["batch_scanned_path"] = target_dir_str
-
-    items: List[IACPlateItem] = st.session_state.get("batch_items", [])
-    info: str = st.session_state.get("batch_info", "")
-
-    if not items:
-        st.warning(
-            f"No matching IAC approach plates found in `{target_dir_str}`.\n\n"
-            f"Metadata Status: `{info}`"
+        faa_dir_str = st.text_input(
+            "FAA PDF Source Directory",
+            value=st.session_state.get("cfg_faa_dir", str(DEFAULT_FAA_DATA_DIR)),
+            help="Directory containing DDTPPA..E folders and DCS volumes",
         )
-        return
+        st.session_state["cfg_faa_dir"] = faa_dir_str
 
-    st.caption(f"ℹ️ **Metadata Index:** `{info}`")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("🎯 Discovered IAC Plates", f"{len(items):,}")
-    m2.metric("🛡️ Non-IAC Preserved", "100% Untouched (APD, DP, etc.)")
-    m3.metric("⚡ Vector Engine", "PyMuPDF Native Overlay")
-    est_mins = max(1, int(len(items) / (5.0 * 60)))
-    m4.metric("⏱️ Approx Total Runtime", f"~{est_mins} mins (@ ~5 pl/s)")
+        out_dir_str = st.text_input(
+            "Target ChartData Output Directory",
+            value=st.session_state.get("cfg_out_dir", str(DEFAULT_OUTPUT_DIR)),
+            help="Destination folder for ChartData/Plates/Plates.sqlite and US/",
+        )
+        st.session_state["cfg_out_dir"] = out_dir_str
 
-    with st.expander(
-        f"📋 Preview Discovered IAC Approach Plates (First 50 of {len(items):,})",
-        expanded=False,
-    ):
-        df_preview = [
-            {
-                "State": it.state,
-                "Airport": it.icao_ident or it.airport_ident,
-                "Chart Name": it.chart_name,
-                "PDF File": it.file_name,
-                "Full Path": str(it.file_path),
-            }
-            for it in items[:50]
-        ]
-        st.dataframe(df_preview, width="stretch")
+    with col2:
+        st.subheader("🎨 Format & Enhancement Mode")
+        format_opt = st.radio(
+            "Output Plate File Format",
+            options=[
+                "PNG (Dynon Avionics SkyView compatible)",
+                "PDF (Official FAA Vector PDF)",
+            ],
+            index=0,
+            help="Dynon SkyView requires raster PNG files named in Plates.sqlite. Mobile EFBs like Airmate use PDF.",
+        )
+        selected_format = "png" if format_opt.startswith("PNG") else "pdf"
+
+        if selected_format == "png":
+            png_mode_opt = st.radio(
+                "PNG Enhancement Mode",
+                options=[
+                    "Enhanced (4-Color Tactical Briefing on IAC plates; standard raster for all others)",
+                    "Standard (Crisp standard raster for all plates, no tactical overlays)",
+                ],
+                index=0,
+                help="Enhanced mode briefings apply only to Instrument Approach Charts (IAC). Airport diagrams, STARs, departures, and minimums remain clean raster images.",
+            )
+            selected_png_mode = "enhanced" if png_mode_opt.startswith("Enhanced") else "standard"
+
+            dpi_val = st.slider(
+                "Raster Resolution (DPI)",
+                min_value=150,
+                max_value=300,
+                value=200,
+                step=10,
+                help="200 DPI matches Dynon SkyView display specs (approx 1076x1650 px).",
+            )
+            selected_link_mode = "hardlink"
+        else:
+            selected_png_mode = "standard"
+            dpi_val = 200
+            link_mode_opt = st.radio(
+                "File Linking Strategy",
+                options=[
+                    "Hardlink (Fastest, zero additional disk space)",
+                    "Copy (Physical standalone copy)",
+                    "Symlink (Symbolic filesystem link)",
+                ],
+                index=0,
+            )
+            selected_link_mode = (
+                "hardlink" if link_mode_opt.startswith("Hardlink")
+                else ("copy" if link_mode_opt.startswith("Copy") else "symlink")
+            )
 
     st.divider()
-    st.subheader("⚙️ Batch Execution Settings")
+    st.subheader("⚙️ Scope & Concurrency")
+    col_scope, col_adv = st.columns(2)
 
-    col_dest, col_scope = st.columns(2)
-    with col_dest:
-        format_opt = st.radio(
-            "Output File Format",
+    with col_scope:
+        scope_opt = st.radio(
+            "Processing Scope",
             options=[
-                "PDF (Enhanced Vector PDF with Overlay)",
-                "PNG (High-Resolution RGBA Image)",
-                "Both (PDF + PNG)",
-            ],
-            index=0,
-            help="Choose whether to generate vector PDFs, raster PNG images, or both.",
-        )
-        selected_format = (
-            "BOTH"
-            if format_opt.startswith("Both")
-            else ("PNG" if format_opt.startswith("PNG") else "PDF")
-        )
-
-        dest_mode = st.radio(
-            "Output Destination Mode",
-            options=[
-                "Safe In-Place Overwrite (Updates files directly in ChartData for immediate Airmate/EFB use)",
-                "Export to Separate Output Folder (Leaves original PDFs completely untouched)",
+                "Full Batch — Process ALL ~22,000+ plates",
+                "Test Run — Process first N plates only (Quick verification)",
             ],
             index=0,
         )
-        out_dir_path: Optional[Path] = None
-        if "Separate" in dest_mode:
-            out_dir_str = st.text_input(
-                "Export Destination Directory",
-                value=str(Path(target_dir_str) / f"Enhanced_IAC_{selected_format}"),
-            )
-            out_dir_path = Path(out_dir_str)
+        test_limit: Optional[int] = None
+        if "Test Run" in scope_opt:
+            test_limit = st.slider("Test Run Plate Limit", min_value=5, max_value=200, value=20, step=5)
 
         workers = st.slider(
             "Concurrent Worker Threads",
             min_value=1,
             max_value=16,
-            value=6,
-            help="Processing speed scales with thread count. 6-8 threads is recommended.",
+            value=8,
+            help="Multi-threading speeds up PNG rasterization and enhancement significantly.",
         )
 
-    with col_scope:
-        run_scope = st.radio(
-            "Processing Scope",
-            options=[
-                f"Full Batch — Enhance ALL {len(items):,} IAC plates",
-                "Test Run — Enhance first N plates only",
-            ],
-            index=0,
-        )
-        test_limit: Optional[int] = None
-        if "Test Run" in run_scope:
-            test_limit = st.slider(
-                "Test Run Plate Limit",
-                min_value=1,
-                max_value=min(100, len(items)),
-                value=min(10, len(items)),
+    with col_adv:
+        with st.expander("🛠️ Advanced Options", expanded=False):
+            include_afd = st.checkbox(
+                "Include Chart Supplements (AFD) from DCS volumes",
+                value=True,
+                help="Parses DCS Chart Supplement XMLs and includes AFD airport facility pages.",
             )
+            clean_dir = st.checkbox(
+                "Clean output directory before building",
+                value=False,
+                help="Wipes existing destination directory prior to running.",
+            )
+            chart_code_style = st.selectbox(
+                "Chart Code Naming Convention",
+                options=["airmate (IAC, STAR, DPO, APD, DP, MIN, HOT)", "faa (IAP, STR, ODP, APD, DP, MIN, HOT)"],
+                index=0,
+            )
+            style_code = "airmate" if chart_code_style.startswith("airmate") else "faa"
+
+            ref_db_input = st.text_input(
+                "Optional Reference Database (for GPS georeferencing coordinates)",
+                value="",
+                placeholder="Leave blank for 100% pure FAA data with no external dependency",
+            )
+            ref_db_path = Path(ref_db_input.strip()) if ref_db_input.strip() else None
 
     st.divider()
-    active_items = items[:test_limit] if test_limit else items
+
     btn_col1, btn_col2 = st.columns([2, 5])
     with btn_col1:
-        start_btn = st.button(
-            f"🚀 Enhance {len(active_items):,} IAC Plates",
+        run_btn = st.button(
+            "🚀 Generate ChartData & Plates",
             type="primary",
             width="stretch",
         )
 
-    if start_btn:
+    if run_btn:
+        xml_p = Path(xml_path_str)
+        faa_p = Path(faa_dir_str)
+        out_p = Path(out_dir_str)
+
+        if not xml_p.is_file():
+            st.error(f"FAA d-TPP XML metafile not found: `{xml_p}`")
+            return
+        if not faa_p.is_dir():
+            st.error(f"FAA PDF data directory not found: `{faa_p}`")
+            return
+
         st.markdown(
-            f"**⚡ Running batch enhancement on {len(active_items):,} IAC vector PDF plates...**"
+            f"**⚡ Building ChartData in `{out_p}` (Format: `{selected_format.upper()}`, Mode: `{selected_png_mode.upper()}`) ...**"
         )
 
         prog_bar = st.progress(0.0)
         status_banner = st.empty()
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        p_slot = col_m1.empty()
-        s_slot = col_m2.empty()
-        e_slot = col_m3.empty()
-        eta_slot = col_m4.empty()
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        c_slot = m_col1.empty()
+        s_slot = m_col2.empty()
+        e_slot = m_col3.empty()
+        eta_slot = m_col4.empty()
 
         log_placeholder = st.empty()
         recent_logs: List[str] = []
 
-        def _ui_progress_cb(p: BatchProgress) -> None:
-            pct = min(1.0, p.completed / p.total)
+        def _ui_cb(p: RecreateProgress) -> None:
+            pct = min(1.0, p.completed / max(1, p.total)) if p.total > 0 else 0.0
             prog_bar.progress(pct)
-            status_banner.text(
-                f"Processing ({p.completed}/{p.total}): {p.current_item.file_name} — {p.current_item.chart_name}"
-            )
-            p_slot.metric("Progress", f"{p.completed} / {p.total} ({pct * 100:.1f}%)")
+            status_banner.markdown(f"**Stage:** `{p.stage.upper()}` — {p.message}")
+
+            c_slot.metric("Progress", f"{p.completed:,} / {p.total:,} ({pct * 100:.1f}%)")
             s_slot.metric("Speed", f"{p.speed_per_sec:.1f} pl/s")
             elapsed_fmt = time.strftime("%H:%M:%S", time.gmtime(p.elapsed_seconds))
             e_slot.metric("Elapsed", elapsed_fmt)
             eta_fmt = time.strftime("%H:%M:%S", time.gmtime(p.eta_seconds))
             eta_slot.metric("ETA", eta_fmt)
 
-            badge = "✅" if p.last_result.success else "❌"
-            msg = f"{badge} `{p.current_item.file_name}` ({p.current_item.icao_ident or p.current_item.airport_ident}) — {p.current_item.chart_name}: **{p.last_result.highlights_count} hl** ({p.last_result.duration:.2f}s)"
-            recent_logs.append(msg)
-            if len(recent_logs) > 8:
-                recent_logs.pop(0)
-            log_placeholder.markdown("\n\n".join(reversed(recent_logs)))
+            if p.current_item:
+                badge = "✅" if p.is_success else "❌"
+                recent_logs.append(f"{badge} `{p.current_item}` ({p.speed_per_sec:.1f} pl/s)")
+                if len(recent_logs) > 8:
+                    recent_logs.pop(0)
+                log_placeholder.markdown("\n\n".join(reversed(recent_logs)))
 
-        t_start = time.time()
-        results = run_batch_enhancement(
-            active_items,
-            output_dir=out_dir_path,
-            output_format=selected_format,
-            aircraft_categories=selected_cats or ["A", "B"],
-            target_approaches=selected_approaches or ["LPV", "LNAV/VNAV"],
-            enabled_colors=enabled_colors,
-            opacity_scale=opacity_scale,
-            max_workers=workers,
-            progress_callback=_ui_progress_cb,
-        )
-        total_time = time.time() - t_start
-        prog_bar.progress(1.0)
-        status_banner.empty()
-        successes = sum(1 for r in results if r.success)
-        failures = sum(1 for r in results if not r.success)
-        speed = len(results) / total_time if total_time > 0 else 0.0
+        try:
+            summary = build_chartdata(
+                xml_path=xml_p,
+                faa_data_dir=faa_p,
+                output_dir=out_p,
+                ref_db_path=ref_db_path,
+                output_format=selected_format,
+                png_mode=selected_png_mode,
+                dpi=dpi_val,
+                workers=workers,
+                link_mode=selected_link_mode,
+                include_afd=include_afd,
+                chart_code_style=style_code,
+                clean=clean_dir,
+                limit=test_limit,
+                aircraft_categories=selected_cats or ["A", "B"],
+                target_approaches=selected_approaches or ["LPV", "LNAV/VNAV"],
+                enabled_colors=enabled_colors,
+                opacity_scale=opacity_scale,
+                progress_callback=_ui_cb,
+            )
 
-        st.success(
-            f"🎉 **Batch Enhancement Complete in {total_time:.1f}s ({speed:.1f} plates/sec)!**\n\n"
-            f"- **Enhanced IAC Plates:** `{successes:,}`\n"
-            f"- **Format:** `{selected_format}`\n"
-            f"- **Errors / Failures:** `{failures}`\n"
-            f"- **Underlying Non-IAC Charts Untouched:** `100%`"
-        )
+            prog_bar.progress(1.0)
+            status_banner.empty()
+
+            st.success(
+                f"🎉 **ChartData Successfully Built in {summary['total_time']:.1f}s!**\n\n"
+                f"- **Output Directory:** `{summary['output_dir']}`\n"
+                f"- **Plates Database:** `{summary['db_path']}` ({summary['db_size']:,} bytes)\n"
+                f"- **Format:** `{summary['output_format'].upper()}` ({'Dynon Avionics SkyView' if summary['output_format'] == 'png' else 'FAA Vector PDF'})\n"
+                f"- **Airports Indexed:** `{summary['total_airports']:,}`\n"
+                f"- **Charts in Database:** `{summary['total_charts']:,}` (d-TPP: `{summary['total_charts'] - summary['afd_charts_count']:,}`, AFD: `{summary['afd_charts_count']:,}`)\n"
+                f"- **Files Processed:** `{summary['completed_files']:,}` (Errors: `{summary['errors']}`)\n"
+                f"- **Cycle:** `{summary['cycle']}` ({summary['valid_dates'][0]} → {summary['valid_dates'][1]})"
+            )
+        except Exception as e:
+            st.error(f"❌ Error during ChartData generation: {e}")
 
 
 def main() -> None:
@@ -502,13 +520,13 @@ def main() -> None:
         "Application Mode",
         options=[
             "🔍 Single Plate Tactical Viewer & Briefing",
-            "⚡ Batch Directory Enhancer (IAC Plates Only)",
+            "⚡ FAA ChartData & Plates Generator (Dynon PNG / Airmate PDF)",
         ],
         horizontal=True,
     )
 
     if app_mode.startswith("⚡"):
-        render_batch_enhancer_panel(
+        render_chartdata_generator_panel(
             selected_cats=selected_cats,
             selected_approaches=selected_approaches,
             enabled_colors=enabled_colors,

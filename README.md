@@ -63,16 +63,19 @@ The Web UI features two distinct operation modes:
 - **Interactive Side-by-Side Comparison:** Instant high-DPI inspection of original vs. enhanced plate.
 - **Pilot Briefing & Downloads:** Generates Markdown "5 A's" briefing summary and one-click downloads for enhanced vector `.pdf` and high-res `.png`.
 
-### 2. ⚡ Batch Directory Enhancer (IAC Plates Only)
-- **Directory Path Input:** Point to any folder (e.g. `/Users/GFahmy/Documents/RV-7/Airmate/ChartData`).
-- **Targeted Discovery:** Automatically reads `Plates.sqlite` (or `d-TPP_Metafile.xml`) to identify all **11,151** Instrument Approach Procedure (`IAC` / `IAP` / `DAU`) charts.
-- **Strict Non-IAC Protection:** All non-IAC charts (`APD` Airport Diagrams, `DP` Departures, `STAR` Arrivals, `MIN` Minimums) are strictly preserved and left 100% untouched.
-- **Output File Format Selector:**
-  - `PDF (Enhanced Vector PDF with Overlay)`
-  - `PNG (High-Resolution RGBA Image)`
-  - `Both (PDF + PNG)`
-- **Output Destination:** Safe in-place overwrite (with atomic file renaming) or export to a dedicated subfolder.
-- **Multithreaded Processing:** Configurable worker threads (1–16) with live progress bar, speed (plates/sec), elapsed time, ETA, and recent file activity log.
+### 2. ⚡ FAA ChartData & Plates Generator (Dynon PNG / Airmate PDF)
+- **Built-in Web UI Generator:** Recreates the full `ChartData` directory tree (`Plates/Plates.sqlite` + `Plates/US/`) directly from the Web UI.
+- **Configurable Source & Destination Paths:** Customize the FAA `d-TPP_Metafile.xml` path, source PDF directory (`DDTPPA..E` + `DCS`), and output destination (`ChartData`).
+- **Dynon Avionics SkyView (PNG) vs Mobile EFB (PDF):**
+  - `PNG (Dynon Avionics SkyView compatible)`: Automatically aligns database records with lowercase `.png` files at 200 DPI.
+  - `PDF (Official FAA Vector PDF)`: Fast hardlink/copy creation of genuine single-page vector PDFs.
+- **Configurable Enhancement Mode (for PNG):**
+  - `Enhanced`: Applies 4-color tactical briefing overlays to IAC approach plates while strictly preserving airport diagrams, STARs, departures, and minimums as clean standard rasters.
+  - `Standard`: Clean, unmodified high-contrast raster PNGs for all charts.
+- **Resolution & Concurrency:** Interactive sliders for DPI (150–300 DPI, default 200) and concurrent worker threads (1–16).
+- **Processing Scope:** Choose between **Full Batch** (~22,000+ charts) or **Test Run** (first N charts with interactive slider).
+- **Advanced Controls:** Toggles for Chart Supplements (AFD), directory pre-cleaning, chart code style (`airmate` vs `faa`), and optional reference DB for GPS georeferencing coordinates.
+- **Real-Time Progress Metrics:** Live progress bar, stage status, throughput speed (plates/sec), elapsed time, ETA, and live scrolling activity feed.
 
 ---
 

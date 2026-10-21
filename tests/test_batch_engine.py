@@ -51,7 +51,7 @@ class TestBatchEngine(unittest.TestCase):
         for p in plates[:100]:
             self.assertIn(p.chart_code, ("IAC", "IAP", "DAU"))
             self.assertTrue(p.file_path.is_file(), f"Plate file must exist: {p.file_path}")
-            self.assertTrue(p.file_name.upper().endswith(".PDF"))
+            self.assertTrue(p.file_name.upper().endswith((".PDF", ".PNG")))
 
     def test_enhance_single_and_batch_iac(self):
         if not self.chart_data_dir.exists():
