@@ -66,7 +66,8 @@ The Web UI features two distinct operation modes:
 - **Pilot Briefing & Downloads:** Generates Markdown "5 A's" briefing summary and one-click downloads for enhanced vector `.pdf` and high-res `.png`.
 
 ### 2. ⚡ FAA ChartData & Plates Generator (Dynon PNG / Airmate PDF)
-- **Built-in Web UI Generator:** Recreates the full `ChartData` directory tree (`Plates/Plates.sqlite` + `Plates/US/`) directly from the Web UI.
+- **📥 Direct FAA Raw Data Downloader & Extractor:** Download official 28-day cycle terminal procedure volume archives (`DDTPPA`..`E`) straight from FAA Aeronautical Information Services (`aeronav.faa.gov`), automatically extracting them into `/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data` and cleaning up temporary archives to save ~3.7 GB of disk space.
+- **🚀 One-Click End-to-End Generation:** Download fresh FAA volumes, extract them, and immediately build the complete Dynon SkyView `ChartData` package in a single uninterrupted action.
 - **Configurable Source & Destination Paths:** Customize the FAA `d-TPP_Metafile.xml` path, source PDF directory (`DDTPPA..E` + `DCS`), and output destination (`ChartData`).
 - **Dynon Avionics SkyView (PNG) vs Mobile EFB (PDF):**
   - `PNG (Dynon Avionics SkyView compatible)`: Automatically aligns database records with lowercase `.png` files at 200 DPI.
@@ -77,7 +78,7 @@ The Web UI features two distinct operation modes:
 - **Resolution & Concurrency:** Interactive sliders for DPI (150–300 DPI, default 200) and concurrent worker threads (1–16).
 - **Processing Scope:** Choose between **Full Batch** (~22,000+ charts) or **Test Run** (first N charts with interactive slider).
 - **Advanced Controls:** Toggles for Chart Supplements (AFD), directory pre-cleaning, chart code style (`airmate` vs `faa`), and optional reference DB for GPS georeferencing coordinates.
-- **Real-Time Progress Metrics:** Live progress bar, stage status, throughput speed (plates/sec), elapsed time, ETA, and live scrolling activity feed.
+- **Real-Time Progress Metrics:** Live progress bar, stage status, download speed (MB/s), file extraction rate, elapsed time, ETA, and live scrolling activity feed.
 
 ---
 
@@ -127,7 +128,27 @@ The Web UI features two distinct operation modes:
 
 Rebuilds an entire Airmate and **Dynon Avionics SkyView** compatible `ChartData` structure (SQLite database + single-page PNG or PDF folder) **100% standalone** from official FAA source data (`d-TPP_Metafile.xml` + PDF volumes `DDTPPA`..`E`), with zero dependency on proprietary reference data.
 
-### 1. Dynon Avionics Compatible PNG Generation (Default)
+### 1. Fresh FAA Data Download & End-to-End Build
+
+```bash
+# 1. Download & Extract all FAA volumes (DDTPPA..E) for cycle 261001, then generate Dynon PNG ChartData:
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --download-faa \
+  --edition 261001 \
+  --format png --enhanced --workers 8
+
+# 2. Download FAA volumes only without building ChartData:
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --download-only \
+  --edition 261001
+
+# 3. Auto-detect current active edition from faa.gov and build:
+~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
+  --download-faa \
+  --format png --enhanced --workers 8
+```
+
+### 2. Dynon Avionics Compatible PNG Generation (Existing Data)
 
 Dynon SkyView displays georeferenced approach plates and airport diagrams as raster PNG images. You can configure whether to generate **Enhanced PNGs** (with 4-color tactical briefings on IAC approach plates) or **Non-Enhanced PNGs**:
 
@@ -147,7 +168,7 @@ Dynon SkyView displays georeferenced approach plates and airport diagrams as ras
   --output-dir /tmp/test_chartdata --format png --limit 20
 ```
 
-### 2. FAA Vector PDF Generation
+### 3. FAA Vector PDF Generation
 
 ```bash
 # Generate single-page vector PDFs:

@@ -63,10 +63,38 @@ try:
 except Exception:
     enhance_pdf_plate = None
 
+try:
+    from enhancer.faa_downloader import (
+        DEFAULT_EDITION,
+        DEFAULT_VOLUMES,
+        download_and_extract_faa_volumes,
+        fetch_available_editions,
+    )
+except ImportError:
+    download_and_extract_faa_volumes = None
+    fetch_available_editions = None
+    DEFAULT_EDITION = "261001"
+    DEFAULT_VOLUMES = ["A", "B", "C", "D", "E"]
 
-DEFAULT_XML_PATH = Path("/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml")
+
 DEFAULT_FAA_DATA_DIR = Path("/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data")
 DEFAULT_OUTPUT_DIR = Path("/Users/GFahmy/Documents/RV-7/Airmate/ChartData")
+
+
+def find_latest_dtpp_xml(faa_data_dir: Path) -> Optional[Path]:
+    """Search for the most recent d-TPP_Metafile.xml within faa_data_dir (e.g. DDTPPE_*)."""
+    if not faa_data_dir.is_dir():
+        return None
+    candidates = list(faa_data_dir.glob("**/d-TPP_Metafile.xml"))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: (str(p.parent.name), p.stat().st_mtime), reverse=True)
+    return candidates[0]
+
+
+DEFAULT_XML_PATH = find_latest_dtpp_xml(DEFAULT_FAA_DATA_DIR) or Path(
+    "/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml"
+)
 
 # Mapping of FAA d-TPP chart codes to standard chart categories
 CHART_CODE_MAP = {
@@ -582,7 +610,12 @@ def build_chartdata(
     target_ext = ".png" if output_format == "png" else ".PDF"
 
     if not xml_path.is_file():
-        raise FileNotFoundError(f"d-TPP XML metafile not found at: {xml_path}")
+        alt_xml = find_latest_dtpp_xml(faa_data_dir)
+        if alt_xml and alt_xml.is_file():
+            print(f"[*] Provided XML '{xml_path}' not found, auto-detected latest: {alt_xml}")
+            xml_path = alt_xml
+        else:
+            raise FileNotFoundError(f"d-TPP XML metafile not found at: {xml_path}")
     if not faa_data_dir.is_dir():
         raise NotADirectoryError(f"FAA PDF data directory not found at: {faa_data_dir}")
 
@@ -1530,8 +1563,98 @@ def main() -> None:
         action="store_true",
         help="Clean/delete existing output directory before generating",
     )
+    parser.add_argument(
+        "--download-faa",
+        action="store_true",
+        help="Download and extract fresh FAA d-TPP zip volumes (DDTPPA..E) before generating ChartData",
+    )
+    parser.add_argument(
+        "--edition",
+        type=str,
+        default=None,
+        help="FAA 28-day cycle edition date code (e.g. '261001', '261029'). If omitted, auto-detects latest from faa.gov",
+    )
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Download and extract FAA volumes and exit without generating ChartData",
+    )
+    parser.add_argument(
+        "--volumes",
+        nargs="+",
+        default=["A", "B", "C", "D", "E"],
+        help="FAA volume letters to download (default: A B C D E)",
+    )
+    parser.add_argument(
+        "--keep-zips",
+        action="store_true",
+        help="Keep downloaded volume zip archives on disk after extraction (default: deletes zips to save ~3.7 GB disk space)",
+    )
 
     args = parser.parse_args()
+
+    # Handle FAA Download if requested
+    if args.download_faa or args.download_only:
+        if not download_and_extract_faa_volumes:
+            print("[!] Error: enhancer.faa_downloader not available.")
+            sys.exit(1)
+
+        edition = args.edition
+        if not edition and fetch_available_editions:
+            print("[*] Checking available cycle editions from faa.gov ...")
+            available = fetch_available_editions()
+            edition = available[0] if available else DEFAULT_EDITION
+            print(f"[+] Using edition: {edition} (detected: {available})")
+        elif not edition:
+            edition = DEFAULT_EDITION
+
+        vols = [v.upper() for v in args.volumes]
+        print(f"[*] Downloading FAA d-TPP volumes ({', '.join(vols)}) for cycle {edition} to {args.faa_data_dir} ...")
+
+        def _cli_dl_cb(p: object) -> None:
+            stage = getattr(p, "stage", "")
+            vol_idx = getattr(p, "volume_index", 1)
+            tot_vols = getattr(p, "total_volumes", 1)
+            vol = getattr(p, "volume", "")
+            if stage == "connecting":
+                print(f"[*] [{vol_idx}/{tot_vols}] {getattr(p, 'message', '')}")
+            elif stage == "downloading":
+                mb_dl = getattr(p, "bytes_downloaded", 0) / 1024 / 1024
+                mb_tot = getattr(p, "total_bytes", 0) / 1024 / 1024
+                pct = (getattr(p, "bytes_downloaded", 0) / max(1, getattr(p, "total_bytes", 1))) * 100
+                speed_mb = getattr(p, "speed_bps", 0.0) / 1024 / 1024
+                eta = getattr(p, "eta_seconds", 0.0)
+                print(
+                    f"\r[{vol_idx}/{tot_vols}] DL {vol}: {mb_dl:.1f}/{mb_tot:.1f} MB ({pct:.1f}%) @ {speed_mb:.2f} MB/s ETA: {eta:.0f}s  ",
+                    end="",
+                    flush=True,
+                )
+            elif stage == "extracting":
+                cur_f = getattr(p, "bytes_downloaded", 0)
+                tot_f = getattr(p, "total_bytes", 0)
+                pct = (cur_f / max(1, tot_f)) * 100
+                print(f"\r[{vol_idx}/{tot_vols}] Extracting {vol}: {cur_f}/{tot_f} files ({pct:.1f}%)  ", end="", flush=True)
+            elif stage == "complete":
+                tot_mb = getattr(p, "total_bytes", 0) / 1024 / 1024
+                elapsed = getattr(p, "elapsed_seconds", 0.0)
+                print(f"\n[+] {getattr(p, 'message', '')} ({tot_mb:.1f} MB in {elapsed:.1f}s)")
+
+        res = download_and_extract_faa_volumes(
+            edition=edition,
+            target_dir=args.faa_data_dir,
+            volumes=vols,
+            delete_zips_after_extract=not args.keep_zips,
+            progress_callback=_cli_dl_cb,
+        )
+
+        extracted_xml = res.get("xml_path")
+        if extracted_xml and isinstance(extracted_xml, Path) and extracted_xml.is_file():
+            args.xml = extracted_xml
+            print(f"[+] Using newly extracted d-TPP XML Metafile: {args.xml}")
+
+        if args.download_only:
+            print("[+] Download and extraction complete. Exiting (--download-only).")
+            return
 
     ref_db = args.reference_db if (args.reference_db and args.reference_db.is_file()) else None
 

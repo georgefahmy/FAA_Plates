@@ -32,6 +32,15 @@ from recreate_airmate_chartdata import (
     RecreateProgress,
     build_chartdata,
 )
+from enhancer.faa_downloader import (
+    DEFAULT_EDITION,
+    DEFAULT_VOLUMES,
+    DownloadProgress,
+    download_and_extract_faa_volumes,
+    fetch_available_editions,
+    fetch_available_editions_with_metadata,
+    get_volume_urls,
+)
 from enhancer.briefing import generate_5a_briefing
 from enhancer.compositor import (
     export_enhanced_pdf_bytes,
@@ -67,6 +76,11 @@ def get_dtpp_browser(data_dir_str: str) -> DTPPPlateBrowser:
     return DTPPPlateBrowser(data_dir=Path(data_dir_str))
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_faa_editions_cached() -> List[dict]:
+    return fetch_available_editions_with_metadata()
+
+
 @st.cache_data(show_spinner=False)
 def extract_pdf_plate_cached(pdf_bytes: bytes, dpi_scale: float = 3.0):
     locked_base, tokens, lines, layout = load_pdf_plate(pdf_bytes, dpi_scale=dpi_scale)
@@ -94,10 +108,16 @@ def render_dtpp_browser_panel() -> Tuple[Optional[bytes], bool, str]:
     browser = get_dtpp_browser(data_dir_str)
 
     if not browser.is_available:
+        browser.refresh()
+
+    if not browser.is_available:
         st.warning(
             f"FAA d-TPP XML catalog (`d-TPP_Metafile.xml`) not found in `{browser.data_dir}`. "
             "Please upload a PDF/PNG file or use the sample plate tab."
         )
+        if st.button("🔄 Reload FAA Catalog", key="reload_catalog_btn"):
+            get_dtpp_browser.clear()
+            st.rerun()
         return None, False, ""
 
     st.caption(
@@ -219,6 +239,107 @@ def render_dtpp_browser_panel() -> Tuple[Optional[bytes], bool, str]:
     return raw_bytes, True, stem
 
 
+def _execute_chartdata_build(
+    xml_p: Path,
+    faa_p: Path,
+    out_p: Path,
+    selected_format: str,
+    selected_png_mode: str,
+    dpi_val: int,
+    workers: int,
+    selected_link_mode: str,
+    include_afd: bool,
+    style_code: str,
+    clean_dir: bool,
+    test_limit: Optional[int],
+    ref_db_path: Optional[Path],
+    selected_cats: List[str],
+    selected_approaches: List[str],
+    enabled_colors: Set[str],
+    opacity_scale: float,
+) -> None:
+    """Helper to execute recreate_airmate_chartdata with live Streamlit UI progress reporting."""
+    if not xml_p.is_file():
+        st.error(f"FAA d-TPP XML metafile not found: `{xml_p}`")
+        return
+    if not faa_p.is_dir():
+        st.error(f"FAA PDF data directory not found: `{faa_p}`")
+        return
+
+    st.markdown(
+        f"**⚡ Building ChartData in `{out_p}` (Format: `{selected_format.upper()}`, Mode: `{selected_png_mode.upper()}`) ...**"
+    )
+
+    prog_bar = st.progress(0.0)
+    status_banner = st.empty()
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    c_slot = m_col1.empty()
+    s_slot = m_col2.empty()
+    e_slot = m_col3.empty()
+    eta_slot = m_col4.empty()
+
+    log_placeholder = st.empty()
+    recent_logs: List[str] = []
+
+    def _ui_cb(p: RecreateProgress) -> None:
+        pct = min(1.0, p.completed / max(1, p.total)) if p.total > 0 else 0.0
+        prog_bar.progress(pct)
+        status_banner.markdown(f"**Stage:** `{p.stage.upper()}` — {p.message}")
+
+        c_slot.metric("Progress", f"{p.completed:,} / {p.total:,} ({pct * 100:.1f}%)")
+        s_slot.metric("Speed", f"{p.speed_per_sec:.1f} pl/s")
+        elapsed_fmt = time.strftime("%H:%M:%S", time.gmtime(p.elapsed_seconds))
+        e_slot.metric("Elapsed", elapsed_fmt)
+        eta_fmt = time.strftime("%H:%M:%S", time.gmtime(p.eta_seconds))
+        eta_slot.metric("ETA", eta_fmt)
+
+        if p.current_item:
+            badge = "✅" if p.is_success else "❌"
+            recent_logs.append(f"{badge} `{p.current_item}` ({p.speed_per_sec:.1f} pl/s)")
+            if len(recent_logs) > 8:
+                recent_logs.pop(0)
+            log_placeholder.markdown("\n\n".join(reversed(recent_logs)))
+
+    try:
+        summary = build_chartdata(
+            xml_path=xml_p,
+            faa_data_dir=faa_p,
+            output_dir=out_p,
+            ref_db_path=ref_db_path,
+            output_format=selected_format,
+            png_mode=selected_png_mode,
+            dpi=dpi_val,
+            workers=workers,
+            link_mode=selected_link_mode,
+            include_afd=include_afd,
+            chart_code_style=style_code,
+            clean=clean_dir,
+            limit=test_limit,
+            aircraft_categories=selected_cats or ["A", "B"],
+            target_approaches=selected_approaches or ["LPV", "LNAV/VNAV"],
+            enabled_colors=enabled_colors,
+            opacity_scale=opacity_scale,
+            progress_callback=_ui_cb,
+        )
+
+        prog_bar.progress(1.0)
+        status_banner.empty()
+
+        st.success(
+            f"🎉 **ChartData Successfully Built in {summary['total_time']:.1f}s!**\n\n"
+            f"- **Output Directory:** `{summary['output_dir']}`\n"
+            f"- **Plates Database:** `{summary['db_path']}` ({summary['db_size']:,} bytes)\n"
+            f"- **Format:** `{summary['output_format'].upper()}` ({'Dynon Avionics SkyView' if summary['output_format'] == 'png' else 'FAA Vector PDF'})\n"
+            f"- **Airports Indexed:** `{summary['total_airports']:,}`\n"
+            f"- **Charts in Database:** `{summary['total_charts']:,}` (d-TPP: `{summary['total_charts'] - summary['afd_charts_count']:,}`, AFD: `{summary['afd_charts_count']:,}`)\n"
+            f"- **Georeferenced Charts:** `{summary.get('georeferenced_charts', 0):,}`\n"
+            f"- **Files Processed:** `{summary['completed_files']:,}` (Errors: `{summary['errors']}`)\n"
+            f"- **Cycle:** `{summary['cycle']}` ({summary['valid_dates'][0]} → {summary['valid_dates'][1]})"
+        )
+    except Exception as e:
+        st.error(f"❌ Error during ChartData generation: {e}")
+
+
 def render_chartdata_generator_panel(
     selected_cats: List[str],
     selected_approaches: List[str],
@@ -238,6 +359,95 @@ def render_chartdata_generator_panel(
         "or pure single-page FAA Vector PDFs for mobile EFBs (Airmate)."
     )
 
+    # ------------------------------------------------------------------
+    # 1. FAA Raw Data Downloader & Extractor Section
+    # ------------------------------------------------------------------
+    with st.expander("📥 1. Download Fresh Raw FAA d-TPP Data (Volumes A–E)", expanded=False):
+        st.markdown(
+            "Fetch official 28-day cycle terminal procedures data directly from "
+            "[FAA Aeronautical Information Services (d-TPP)](https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/) "
+            "and extract them into your local FAA folder."
+        )
+
+        dl_col1, dl_col2 = st.columns([1.5, 1.5])
+        with dl_col1:
+            editions_list = get_faa_editions_cached()
+            dropdown_options = [e["label"] for e in editions_list] + ["Manual / Custom Cycle..."]
+
+            # Select default index based on saved edition or latest
+            saved_edition = st.session_state.get("dl_edition")
+            default_idx = 0
+            if saved_edition:
+                for idx, ed_meta in enumerate(editions_list):
+                    if ed_meta["edition"] == saved_edition:
+                        default_idx = idx
+                        break
+
+            selected_edition_opt = st.selectbox(
+                "📅 FAA Cycle Edition (from FAA.gov)",
+                options=dropdown_options,
+                index=default_idx,
+                help="Available 28-day digital terminal procedures publication cycles detected live from faa.gov/dtpp",
+            )
+
+            if selected_edition_opt == "Manual / Custom Cycle...":
+                edition_val = st.text_input(
+                    "Custom Edition Code (YYMMDD)",
+                    value=st.session_state.get("dl_edition", "261029"),
+                    help="6-digit cycle date code, e.g. 261029",
+                ).strip()
+            else:
+                matched_meta = next(e for e in editions_list if e["label"] == selected_edition_opt)
+                edition_val = matched_meta["edition"]
+
+            st.session_state["dl_edition"] = edition_val
+
+        with dl_col2:
+            dl_target_dir_str = st.text_input(
+                "📁 Extract Target Directory",
+                value=st.session_state.get("dl_target_dir", str(DEFAULT_FAA_DATA_DIR)),
+                help="Directory where volume folders DDTPPA..E will be extracted.",
+            )
+            st.session_state["dl_target_dir"] = dl_target_dir_str.strip()
+
+        st.markdown("**Volumes to Download:**")
+        v_col1, v_col2, v_col3, v_col4, v_col5 = st.columns(5)
+        v_a = v_col1.checkbox("Volume A", value=True, help="AK, WA, OR, CA, etc.")
+        v_b = v_col2.checkbox("Volume B", value=True, help="ID, MT, NV, UT, AZ, etc.")
+        v_c = v_col3.checkbox("Volume C", value=True, help="ND, SD, NE, KS, OK, TX, etc.")
+        v_d = v_col4.checkbox("Volume D", value=True, help="MN, WI, IL, MI, IN, OH, etc.")
+        v_e = v_col5.checkbox("Volume E", value=True, help="XML Catalog & Change Notices")
+
+        chosen_vols = []
+        if v_a: chosen_vols.append("A")
+        if v_b: chosen_vols.append("B")
+        if v_c: chosen_vols.append("C")
+        if v_d: chosen_vols.append("D")
+        if v_e: chosen_vols.append("E")
+
+        delete_zips = st.checkbox(
+            "Delete temporary .zip archives after extraction (Saves ~3.7 GB disk space)",
+            value=True,
+        )
+
+        urls_preview = get_volume_urls(edition_val.strip(), chosen_vols)
+        with st.expander("🔗 Direct FAA Download Links Preview", expanded=False):
+            for v_name, v_url in urls_preview.items():
+                st.markdown(f"- **{v_name}:** [{v_url}]({v_url})")
+
+        dl_btn1, dl_btn2 = st.columns([1, 1])
+        with dl_btn1:
+            dl_only_btn = st.button("📥 Download & Extract FAA Volumes Only", width="stretch")
+        with dl_btn2:
+            end_to_end_btn = st.button(
+                "🚀 One-Click: Download, Extract & Generate Dynon Plates",
+                type="primary",
+                width="stretch",
+            )
+
+    # ------------------------------------------------------------------
+    # 2. Generator Configuration Section
+    # ------------------------------------------------------------------
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("📁 Source & Target Paths")
@@ -374,90 +584,134 @@ def render_chartdata_generator_panel(
             width="stretch",
         )
 
-    if run_btn:
-        xml_p = Path(xml_path_str)
-        faa_p = Path(faa_dir_str)
-        out_p = Path(out_dir_str)
-
-        if not xml_p.is_file():
-            st.error(f"FAA d-TPP XML metafile not found: `{xml_p}`")
-            return
-        if not faa_p.is_dir():
-            st.error(f"FAA PDF data directory not found: `{faa_p}`")
+    # ------------------------------------------------------------------
+    # 3. Action Handlers
+    # ------------------------------------------------------------------
+    # Handler for Download Fresh Data (dl_only_btn or end_to_end_btn)
+    if dl_only_btn or end_to_end_btn:
+        if not chosen_vols:
+            st.error("Please select at least one volume (A–E) to download.")
             return
 
-        st.markdown(
-            f"**⚡ Building ChartData in `{out_p}` (Format: `{selected_format.upper()}`, Mode: `{selected_png_mode.upper()}`) ...**"
-        )
+        target_p = Path(dl_target_dir_str)
+        target_p.mkdir(parents=True, exist_ok=True)
 
-        prog_bar = st.progress(0.0)
-        status_banner = st.empty()
-        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-        c_slot = m_col1.empty()
-        s_slot = m_col2.empty()
-        e_slot = m_col3.empty()
-        eta_slot = m_col4.empty()
+        st.markdown(f"**⚡ Fetching FAA Volumes ({', '.join(chosen_vols)}) for cycle `{edition_val}` ...**")
+        dl_prog_bar = st.progress(0.0)
+        dl_status_banner = st.empty()
+        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+        d_vol_slot = d_col1.empty()
+        d_pct_slot = d_col2.empty()
+        d_spd_slot = d_col3.empty()
+        d_eta_slot = d_col4.empty()
 
-        log_placeholder = st.empty()
-        recent_logs: List[str] = []
+        def _dl_cb(p: DownloadProgress) -> None:
+            stage_u = p.stage.upper()
+            dl_status_banner.markdown(f"**Stage:** `{stage_u}` — {p.message}")
+            d_vol_slot.metric("Volume", f"{p.volume} ({p.volume_index}/{p.total_volumes})")
 
-        def _ui_cb(p: RecreateProgress) -> None:
-            pct = min(1.0, p.completed / max(1, p.total)) if p.total > 0 else 0.0
-            prog_bar.progress(pct)
-            status_banner.markdown(f"**Stage:** `{p.stage.upper()}` — {p.message}")
-
-            c_slot.metric("Progress", f"{p.completed:,} / {p.total:,} ({pct * 100:.1f}%)")
-            s_slot.metric("Speed", f"{p.speed_per_sec:.1f} pl/s")
-            elapsed_fmt = time.strftime("%H:%M:%S", time.gmtime(p.elapsed_seconds))
-            e_slot.metric("Elapsed", elapsed_fmt)
-            eta_fmt = time.strftime("%H:%M:%S", time.gmtime(p.eta_seconds))
-            eta_slot.metric("ETA", eta_fmt)
-
-            if p.current_item:
-                badge = "✅" if p.is_success else "❌"
-                recent_logs.append(f"{badge} `{p.current_item}` ({p.speed_per_sec:.1f} pl/s)")
-                if len(recent_logs) > 8:
-                    recent_logs.pop(0)
-                log_placeholder.markdown("\n\n".join(reversed(recent_logs)))
+            if p.stage == "connecting":
+                pass
+            elif p.stage == "downloading":
+                pct = (p.bytes_downloaded / max(1, p.total_bytes)) if p.total_bytes > 0 else 0.0
+                overall = min(1.0, (p.volume_index - 1 + pct) / max(1, p.total_volumes))
+                dl_prog_bar.progress(overall)
+                mb_dl = p.bytes_downloaded / 1024 / 1024
+                mb_tot = p.total_bytes / 1024 / 1024
+                d_pct_slot.metric("DL Progress", f"{mb_dl:.1f}/{mb_tot:.1f} MB ({pct*100:.1f}%)")
+                d_spd_slot.metric("Speed", f"{p.speed_bps / 1024 / 1024:.2f} MB/s")
+                eta_fmt = time.strftime("%H:%M:%S", time.gmtime(p.eta_seconds))
+                d_eta_slot.metric("ETA", eta_fmt)
+            elif p.stage == "extracting":
+                pct = (p.bytes_downloaded / max(1, p.total_bytes)) if p.total_bytes > 0 else 0.0
+                overall = min(1.0, (p.volume_index - 1 + pct) / max(1, p.total_volumes))
+                dl_prog_bar.progress(overall)
+                d_pct_slot.metric("Extract Progress", f"{p.bytes_downloaded:,}/{p.total_bytes:,} files")
+                d_spd_slot.metric("Speed", f"{p.speed_bps:.1f} f/s")
+                eta_fmt = time.strftime("%H:%M:%S", time.gmtime(p.eta_seconds))
+                d_eta_slot.metric("ETA", eta_fmt)
+            elif p.stage == "complete":
+                dl_prog_bar.progress(1.0)
+                tot_mb = p.total_bytes / 1024 / 1024
+                d_pct_slot.metric("Complete", f"{tot_mb:.1f} MB")
+                d_spd_slot.metric("Avg Speed", f"{p.speed_bps / 1024 / 1024:.2f} MB/s")
+                d_eta_slot.metric("Elapsed", time.strftime("%H:%M:%S", time.gmtime(p.elapsed_seconds)))
 
         try:
-            summary = build_chartdata(
-                xml_path=xml_p,
-                faa_data_dir=faa_p,
-                output_dir=out_p,
-                ref_db_path=ref_db_path,
-                output_format=selected_format,
-                png_mode=selected_png_mode,
-                dpi=dpi_val,
-                workers=workers,
-                link_mode=selected_link_mode,
-                include_afd=include_afd,
-                chart_code_style=style_code,
-                clean=clean_dir,
-                limit=test_limit,
-                aircraft_categories=selected_cats or ["A", "B"],
-                target_approaches=selected_approaches or ["LPV", "LNAV/VNAV"],
-                enabled_colors=enabled_colors,
-                opacity_scale=opacity_scale,
-                progress_callback=_ui_cb,
+            dl_res = download_and_extract_faa_volumes(
+                edition=edition_val.strip(),
+                target_dir=target_p,
+                volumes=chosen_vols,
+                delete_zips_after_extract=delete_zips,
+                progress_callback=_dl_cb,
             )
 
-            prog_bar.progress(1.0)
-            status_banner.empty()
+            xml_found = dl_res.get("xml_path")
+            if xml_found and isinstance(xml_found, Path) and xml_found.is_file():
+                st.session_state["cfg_xml_path"] = str(xml_found)
+                st.session_state["cfg_faa_dir"] = str(target_p)
+                xml_path_str = str(xml_found)
+                faa_dir_str = str(target_p)
+                try:
+                    get_dtpp_browser.clear()
+                except Exception:
+                    pass
 
             st.success(
-                f"🎉 **ChartData Successfully Built in {summary['total_time']:.1f}s!**\n\n"
-                f"- **Output Directory:** `{summary['output_dir']}`\n"
-                f"- **Plates Database:** `{summary['db_path']}` ({summary['db_size']:,} bytes)\n"
-                f"- **Format:** `{summary['output_format'].upper()}` ({'Dynon Avionics SkyView' if summary['output_format'] == 'png' else 'FAA Vector PDF'})\n"
-                f"- **Airports Indexed:** `{summary['total_airports']:,}`\n"
-                f"- **Charts in Database:** `{summary['total_charts']:,}` (d-TPP: `{summary['total_charts'] - summary['afd_charts_count']:,}`, AFD: `{summary['afd_charts_count']:,}`)\n"
-                f"- **Georeferenced Charts:** `{summary.get('georeferenced_charts', 0):,}`\n"
-                f"- **Files Processed:** `{summary['completed_files']:,}` (Errors: `{summary['errors']}`)\n"
-                f"- **Cycle:** `{summary['cycle']}` ({summary['valid_dates'][0]} → {summary['valid_dates'][1]})"
+                f"🎉 **FAA Data Download & Extraction Complete in {dl_res['elapsed_seconds']:.1f}s!**\n\n"
+                f"- **Edition:** `{dl_res['edition']}`\n"
+                f"- **Target Directory:** `{target_p}`\n"
+                f"- **Volumes Extracted:** `{', '.join(dl_res['volumes'])}`\n"
+                f"- **Metafile XML:** `{xml_found}`\n"
+                f"- **Total Data Transferred:** `{dl_res['total_bytes'] / 1024 / 1024:.1f} MB`"
             )
+
+            if end_to_end_btn:
+                st.markdown("---")
+                st.markdown("### 🚀 Initiating Dynon Plates & Database Generation...")
+                _execute_chartdata_build(
+                    xml_p=Path(xml_path_str),
+                    faa_p=Path(faa_dir_str),
+                    out_p=Path(out_dir_str),
+                    selected_format=selected_format,
+                    selected_png_mode=selected_png_mode,
+                    dpi_val=dpi_val,
+                    workers=workers,
+                    selected_link_mode=selected_link_mode,
+                    include_afd=include_afd,
+                    style_code=style_code,
+                    clean_dir=clean_dir,
+                    test_limit=test_limit,
+                    ref_db_path=ref_db_path,
+                    selected_cats=selected_cats,
+                    selected_approaches=selected_approaches,
+                    enabled_colors=enabled_colors,
+                    opacity_scale=opacity_scale,
+                )
         except Exception as e:
-            st.error(f"❌ Error during ChartData generation: {e}")
+            st.error(f"❌ Error during FAA download/extraction: {e}")
+
+    # Handler for direct generation button
+    elif run_btn:
+        _execute_chartdata_build(
+            xml_p=Path(xml_path_str),
+            faa_p=Path(faa_dir_str),
+            out_p=Path(out_dir_str),
+            selected_format=selected_format,
+            selected_png_mode=selected_png_mode,
+            dpi_val=dpi_val,
+            workers=workers,
+            selected_link_mode=selected_link_mode,
+            include_afd=include_afd,
+            style_code=style_code,
+            clean_dir=clean_dir,
+            test_limit=test_limit,
+            ref_db_path=ref_db_path,
+            selected_cats=selected_cats,
+            selected_approaches=selected_approaches,
+            enabled_colors=enabled_colors,
+            opacity_scale=opacity_scale,
+        )
 
 
 def main() -> None:

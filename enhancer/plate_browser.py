@@ -132,15 +132,31 @@ class DTPPPlateBrowser:
         direct = self.data_dir / "d-TPP_Metafile.xml"
         if direct.is_file():
             return direct
-        matches = sorted(self.data_dir.rglob("d-TPP_Metafile.xml"))
+        matches = sorted(
+            self.data_dir.rglob("d-TPP_Metafile.xml"),
+            key=lambda p: (str(p.parent.name), p.stat().st_mtime),
+            reverse=True,
+        )
         if matches:
             return matches[0]
-        xmls = sorted(self.data_dir.rglob("*.xml"))
+        xmls = sorted(self.data_dir.rglob("*.xml"), key=lambda p: p.stat().st_mtime, reverse=True)
         return xmls[0] if xmls else None
+
+    def refresh(self) -> bool:
+        """Force re-scan of data_dir for d-TPP_Metafile.xml and reload index if found."""
+        new_xml = self._find_metafile_xml()
+        if new_xml and new_xml.is_file():
+            self.xml_path = new_xml
+            self._ensure_sqlite_index()
+            self._load_airports_index()
+            return True
+        return False
 
     @property
     def is_available(self) -> bool:
-        return self.xml_path is not None and self.xml_path.is_file()
+        if self.xml_path is None or not self.xml_path.is_file() or not self._airports:
+            self.refresh()
+        return self.xml_path is not None and self.xml_path.is_file() and len(self._airports) > 0
 
     def _ensure_sqlite_index(self) -> None:
         """
