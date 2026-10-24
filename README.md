@@ -47,9 +47,30 @@ To install or verify requirements:
 
 ---
 
+## 🖥️ Native macOS Desktop Applet (`FAA Plate Enhancer.app`)
+
+Instead of opening in a web browser, the application can run as a **native standalone desktop applet** powered by macOS WebKit (`pywebview`). This wraps the local engine in a dedicated native macOS window with no browser tabs, no address bar, and no browser chrome.
+
+### How to Launch the Desktop App
+
+1. **Double-Click the Application Bundle:**
+   - Double-click `FAA Plate Enhancer.app` in Finder, or drag it to your macOS `/Applications` folder or Dock.
+2. **Or Launch via Shell Script:**
+   ```bash
+   ./run_desktop.sh
+   ```
+3. **Or Run via Python:**
+   ```bash
+   ~/.virtualenvs/plates/bin/python desktop_app.py
+   ```
+
+When you close the desktop app window or press `Cmd+Q`, the local background server process is automatically terminated cleanly.
+
+---
+
 ## ⚡ Streamlit Web Application (`app.py`)
 
-Launch the interactive app:
+If you prefer using your standard web browser instead of the native desktop window:
 ```bash
 ./run.sh
 # or directly via:
