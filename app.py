@@ -2,7 +2,7 @@
 Streamlit Web UI for the Deterministic FAA d-TPP PDF & PNG Plate Enhancer (`app.py`).
 
 Features:
-- Built-in FAA d-TPP XML-backed Plate Browser (`/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data`
+- Built-in FAA d-TPP XML-backed Plate Browser (`/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data`
   + `d-TPP_Metafile.xml`) indexing 3,197 airports and 24,075 vector PDF charts by
   **State**, **City**, **Airport (FAA LID / ICAO / Name)**, and **Chart Type (`IAP`, `APD`, `DP`, `STR`, `MIN`)**
 - Native PyMuPDF (`pymupdf`) vector extraction of approach course corridors (`lw ≈ 1.44`),

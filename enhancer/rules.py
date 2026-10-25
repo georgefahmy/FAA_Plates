@@ -49,6 +49,92 @@ SOLID_BORDER_COLORS: Dict[str, Tuple[int, int, int, int]] = {
     "RED": (230, 20, 20, 245),
 }
 
+# FAA d-TPP Chart Code Categories
+APPROACH_CODES: Set[str] = {"IAP", "IAC", "DAU"}
+NON_APPROACH_CODES: Set[str] = {
+    "MIN",   # Takeoff and Alternate Minimums booklets
+    "APD",   # Airport Diagrams
+    "DP",    # Departure Procedures (SIDs)
+    "ODP",   # Obstacle Departure Procedures
+    "STR",   # Standard Terminal Arrivals (STARs)
+    "STAR",  # Alternate STAR code
+    "HOT",   # Airport Hot Spots
+    "LAH",   # Land and Hold Short Operations
+    "AFD",   # Airport/Facility Directory / Chart Supplements
+}
+
+NON_APPROACH_TITLE_KEYWORDS: Tuple[str, ...] = (
+    "TAKEOFF MINS",
+    "IFR TAKEOFF MINIMUMS",
+    "TAKEOFF MINIMUMS",
+    "TAKEOFF OBSTACLE",
+    "ALTERNATE MINS",
+    "IFR ALTERNATE AIRPORT MINIMUMS",
+    "ALTERNATE AIRPORT MINIMUMS",
+    "AIRPORT DIAGRAM",
+    "AIRPORT SKETCH",
+    "HOT SPOT",
+    "AIRPORT HOT SPOTS",
+    "DEPARTURE PROCEDURE",
+    "OBSTACLE DEPARTURE PROCEDURE",
+    "STANDARD TERMINAL ARRIVAL",
+    "DIVERSE VECTOR AREA",
+    "LAND AND HOLD-SHORT",
+    "LAHSO",
+    "CHART SUPPLEMENT",
+)
+
+APPROACH_TITLE_KEYWORDS: Tuple[str, ...] = (
+    "RNAV",
+    "ILS",
+    "LOC",
+    "VOR",
+    "NDB",
+    "GPS",
+    "TACAN",
+    "GLS",
+    "VISUAL",
+    "LDA",
+    "SDF",
+    "COPTER",
+    "HI-VOR",
+    "HI-TACAN",
+    "HI-ILS",
+)
+
+def is_approach_plate(lines: List[OCRLine], chart_code: Optional[str] = None) -> bool:
+    """
+    Deterministically determine whether a document is an Instrument Approach Procedure (IAP).
+    Tactical briefing enhancements (Cyan/Magenta/Amber/Red) are strictly and exclusively
+    applied to IAPs/IACs. Non-approach documents (Takeoff/Alternate Minimums, Airport Diagrams,
+    SIDs/Departures, STARs/Arrivals, Hot Spots, LAHSO) must NEVER receive tactical highlights.
+    """
+    if chart_code:
+        cc = chart_code.strip().upper()
+        if cc in NON_APPROACH_CODES:
+            return False
+        if cc in APPROACH_CODES:
+            # Even if tagged IAP, verify top text doesn't explicitly start with TAKEOFF MINS / AIRPORT DIAGRAM
+            top_text = " ".join(ln.text.upper() for ln in lines if ln.norm_y < 0.22)
+            if any(kw in top_text for kw in NON_APPROACH_TITLE_KEYWORDS):
+                return False
+            return True
+
+    # If chart_code is unknown or not provided, inspect lines in the header area (top 22% of page)
+    top_lines = [ln for ln in lines if ln.norm_y < 0.22]
+    top_text = " ".join(ln.text.upper() for ln in top_lines)
+
+    # Reject if non-approach signature is present
+    if any(kw in top_text for kw in NON_APPROACH_TITLE_KEYWORDS):
+        return False
+
+    # Check for approach procedure indicators
+    has_app_kw = any(kw in top_text for kw in APPROACH_TITLE_KEYWORDS)
+    has_rwy = bool(re.search(r"\bRWY\s+\d{1,2}[LCR]?\b|\bRUNWAY\s+\d{1,2}[LCR]?\b", top_text))
+    has_strip = any(kw in top_text for kw in ("APP CRS", "TDZE", "APT ELEV", "MISSED APPR", "RWY LDG", "RWY IDG"))
+
+    return (has_app_kw and (has_rwy or has_strip)) or (has_app_kw and "APPROACH" in top_text) or (has_rwy and has_strip)
+
 # Aviation Regex Patterns
 VHF_FREQ_RE = re.compile(r"(?<!\d)1[1-3]\d\.\d{1,3}")
 UHF_FREQ_RE = re.compile(r"(?<!\d)[2-3]\d{2}\.\d{1,3}")
@@ -175,6 +261,8 @@ class ExtractedPlateMetadata:
     """Structured aviation data extracted during deterministic rule evaluation."""
     title: str = "FAA Instrument Approach Plate"
     airport_id: str = ""
+    is_approach_plate: bool = True
+    document_type: str = "IAP"
     atis_awos_freqs: List[str] = field(default_factory=list)
     approach_freqs: List[str] = field(default_factory=list)
     tower_ctaf_freqs: List[str] = field(default_factory=list)
@@ -205,6 +293,7 @@ class RuleEngine:
         aircraft_categories: Optional[List[str]] = None,
         target_approaches: Optional[List[str]] = None,
         enabled_colors: Optional[Set[str]] = None,
+        chart_code: Optional[str] = None,
     ):
         self.aircraft_categories = (
             [c.upper() for c in aircraft_categories]
@@ -221,16 +310,27 @@ class RuleEngine:
             if enabled_colors
             else {"CYAN", "MAGENTA", "AMBER", "RED"}
         )
+        self.chart_code = chart_code.upper() if chart_code else None
 
     def evaluate(
         self,
         tokens: List[OCRToken],
         lines: List[OCRLine],
         layout: PlateLayout,
+        chart_code: Optional[str] = None,
     ) -> Tuple[List[HighlightBox], ExtractedPlateMetadata]:
+        effective_code = chart_code or self.chart_code
+        if not is_approach_plate(lines, chart_code=effective_code):
+            meta = ExtractedPlateMetadata()
+            meta.is_approach_plate = False
+            meta.document_type = effective_code or "STANDARD"
+            meta.title = "Standard Document (Non-Approach Chart)"
+            return [], meta
+
         W, H = layout.W, layout.H
         highlights: List[HighlightBox] = []
         meta = ExtractedPlateMetadata()
+        meta.is_approach_plate = True
 
         # Extract plate title if present at very top (y < 0.09 * H) or bottom
         header_lines = [ln for ln in lines if ln.norm_y < 0.09 and ln.norm_x > 0.55]

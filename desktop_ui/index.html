@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Approach Plate 4-Color Tactical Enhancer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="top-nav">
+    <div class="nav-brand">
+      <span class="brand-icon">✈️</span>
+      <span class="brand-title">FAA Plate Enhancer</span>
+      <span id="cycle-badge" class="badge-cycle">Cycle --</span>
+    </div>
+
+    <div class="nav-tabs">
+      <button id="tab-btn-viewer" class="tab-btn active" onclick="switchTab('viewer')">
+        <span class="tab-icon">🗺️</span> Plate Enhancer
+      </button>
+      <button id="tab-btn-dynon" class="tab-btn" onclick="switchTab('dynon')">
+        <span class="tab-icon">📦</span> Dynon Export & Updates
+      </button>
+    </div>
+
+    <div class="nav-actions">
+      <button id="btn-save-png" class="btn btn-secondary btn-sm" onclick="exportCurrentPlate('png')" title="Save Enhanced PNG">
+        ⬇️ PNG
+      </button>
+      <button id="btn-save-pdf" class="btn btn-primary btn-sm" onclick="exportCurrentPlate('pdf')" title="Save Enhanced Vector PDF">
+        ⬇️ PDF
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Content Views -->
+  <main class="main-container">
+
+    <!-- VIEW 1: TACTICAL VIEWER -->
+    <section id="view-viewer" class="app-view active">
+      <!-- Top Tactical Controls Bar -->
+      <div class="toolbar">
+        <!-- Airport Search Autocomplete -->
+        <div class="search-box-wrapper">
+          <input
+            type="text"
+            id="airport-search-input"
+            class="input-search"
+            placeholder="Search Airport (e.g. E16, KSJC, KSQL)..."
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <div id="airport-results" class="autocomplete-dropdown hidden"></div>
+        </div>
+
+        <!-- Plate Selector Dropdown -->
+        <div class="select-wrapper plate-select-wrapper">
+          <select id="plate-select" class="select-input">
+            <option value="">Select Approach Plate...</option>
+          </select>
+        </div>
+
+        <div class="divider-v"></div>
+
+        <!-- 4-Color Layer Toggles -->
+        <div id="color-toggles" class="pill-group color-toggles">
+          <label class="color-pill pill-cyan" title="Cyan: Comms & Frequencies">
+            <input type="checkbox" id="color-cyan" checked onchange="onLayerToggle()">
+            <span class="pill-dot"></span> Comms
+          </label>
+          <label class="color-pill pill-magenta" title="Magenta: Approach Path & Minimums">
+            <input type="checkbox" id="color-magenta" checked onchange="onLayerToggle()">
+            <span class="pill-dot"></span> Path
+          </label>
+          <label class="color-pill pill-amber" title="Amber: Missed Approach Escape">
+            <input type="checkbox" id="color-amber" checked onchange="onLayerToggle()">
+            <span class="pill-dot"></span> Missed
+          </label>
+          <label class="color-pill pill-red" title="Red: Terrain, GP, Gotchas & Restrictions">
+            <input type="checkbox" id="color-red" checked onchange="onLayerToggle()">
+            <span class="pill-dot"></span> Alerts
+          </label>
+        </div>
+        <div id="plate-type-badge" class="plate-type-badge badge-standard hidden">Standard Document (No overlay)</div>
+
+        <div class="divider-v"></div>
+
+        <!-- View Mode (Enhanced / Original / Split) -->
+        <div class="segmented-control">
+          <button id="view-mode-enhanced" class="seg-btn active" onclick="setViewMode('enhanced')">Enhanced</button>
+          <button id="view-mode-split" class="seg-btn" onclick="setViewMode('split')">Split</button>
+          <button id="view-mode-original" class="seg-btn" onclick="setViewMode('original')">Original</button>
+        </div>
+
+        <!-- Zoom Controls -->
+        <div class="zoom-controls">
+          <button class="btn-icon" onclick="zoomPlate(0.2)" title="Zoom In">+</button>
+          <button class="btn-icon" onclick="zoomPlate(-0.2)" title="Zoom Out">−</button>
+          <button class="btn-icon" onclick="resetPlateZoom()" title="Fit to Screen">⛶</button>
+        </div>
+      </div>
+
+      <!-- Chart Display Area -->
+      <div id="chart-viewport" class="chart-viewport">
+        <div id="loading-overlay" class="loading-overlay hidden">
+          <div class="spinner"></div>
+          <div class="loading-text">Enhancing Approach Plate...</div>
+        </div>
+
+        <!-- Single View Canvas Container -->
+        <div id="single-canvas-container" class="canvas-container">
+          <img id="main-plate-img" src="" alt="FAA Approach Plate" class="plate-image">
+        </div>
+
+        <!-- Split View Container -->
+        <div id="split-canvas-container" class="split-container hidden">
+          <div class="split-pane">
+            <div class="split-label">Official FAA Base</div>
+            <img id="split-orig-img" src="" alt="Original Plate" class="plate-image">
+          </div>
+          <div class="split-pane">
+            <div class="split-label">4-Color Tactical Overlay</div>
+            <img id="split-enh-img" src="" alt="Enhanced Plate" class="plate-image">
+          </div>
+        </div>
+      </div>
+
+      <!-- Compact Drawer for 5 A's Pilot Briefing -->
+      <div id="briefing-drawer" class="briefing-drawer collapsed">
+        <div class="drawer-header" onclick="toggleBriefingDrawer()">
+          <span class="drawer-title">📋 5 A's Pilot Tactical Briefing</span>
+          <span id="drawer-arrow" class="drawer-arrow">▲</span>
+        </div>
+        <div id="briefing-content" class="drawer-content">
+          <div class="empty-hint">Select a plate to display procedural briefing notes.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: DYNON EXPORT & FAA UPDATER -->
+    <section id="view-dynon" class="app-view">
+      <div class="dynon-panel">
+        <div class="panel-card">
+          <div class="card-header">
+            <h3>📥 1. FAA 28-Day Cycle Download</h3>
+            <p class="card-desc">Download official digital approach plates (DDTPPA..E) directly from aeronav.faa.gov.</p>
+          </div>
+
+          <div class="form-grid form-grid-cycle">
+            <div class="form-group cycle-select-group">
+              <label>FAA Cycle Edition</label>
+              <select id="dynon-cycle-select" class="select-input" onchange="onCycleSelectChange()">
+                <option value="261029">Loading available editions...</option>
+              </select>
+            </div>
+            <div class="form-group custom-edition-group" id="custom-edition-group" style="display: none;">
+              <label>Custom 6-Digit Code (YYMMDD)</label>
+              <input type="text" id="custom-edition-input" class="input-text" placeholder="261029">
+            </div>
+            <div class="form-group folder-path-group">
+              <label>FAA Source Folder</label>
+              <div class="input-action-row">
+                <input type="text" id="path-faa-dir" class="input-text" readonly>
+                <button class="btn btn-secondary btn-sm" onclick="browseFolder('faa')">Browse...</button>
+                <button id="btn-run-dl" class="btn btn-secondary btn-sm" onclick="triggerPipeline('download_only')">
+                📥 Download
+              </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="card-header">
+            <h3>📡 2. Dynon Aviation & Obstacle Database (.duc)</h3>
+            <p class="card-desc">Official Dynon SkyView navigation data from dynonavionics.com (N890GF Tracker integration).</p>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label>Available Dynon Database</label>
+              <select id="dynon-nav-select" class="select-input">
+                <option value="">Loading available databases...</option>
+              </select>
+            </div>
+
+            <div class="form-group full-width">
+              <label>Software / Nav Target Folder</label>
+              <div class="input-action-row">
+                <input type="text" id="path-nav-dir" class="input-text" readonly>
+                <button class="btn btn-secondary btn-sm" onclick="browseFolder('nav')">Browse...</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="action-bar">
+            <button id="btn-download-nav-only" class="btn btn-primary" onclick="downloadDynonNavOnly()">
+              ⬇️ Download Nav Database (.duc) Only
+            </button>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="card-header">
+            <h3>⚡ 3. Dynon Avionics SkyView Package Generator</h3>
+            <p class="card-desc">Generates Plates.sqlite and standardized single-page 200 DPI PNGs.</p>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Output Format</label>
+              <div class="segmented-control">
+                <button id="fmt-png" class="seg-btn active" onclick="setDynonFormat('png')">PNG (Dynon SkyView)</button>
+                <button id="fmt-pdf" class="seg-btn" onclick="setDynonFormat('pdf')">Vector PDF</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>PNG Enhancement</label>
+              <div class="segmented-control">
+                <button id="mode-enhanced" class="seg-btn active" onclick="setDynonMode('enhanced')">Tactical Briefing (IAC)</button>
+                <button id="mode-standard" class="seg-btn" onclick="setDynonMode('standard')">Standard Clean</button>
+              </div>
+            </div>
+
+            <div class="form-group full-width">
+              <label>Target Destination Folder</label>
+              <div class="input-action-row">
+                <input type="text" id="path-out-dir" class="input-text" readonly>
+                <button class="btn btn-secondary btn-sm" onclick="browseFolder('out')">Browse...</button>
+              </div>
+            </div>
+
+            <div class="form-group full-width">
+              <label class="checkbox-row">
+                <input type="checkbox" id="chk-include-nav" checked>
+                <span>Also download Dynon Aviation & Obstacle Database (.duc) during pipeline run</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="action-bar">
+            <button id="btn-run-all" class="btn btn-primary btn-lg" onclick="triggerPipeline('both')">
+              🚀 Download FAA Data & Generate Dynon Plates
+            </button>
+            <button id="btn-run-gen" class="btn btn-secondary" onclick="triggerPipeline('generate_only')">
+              ⚡ Generate Only
+            </button>
+          </div>
+        </div>
+
+        <!-- Live Progress Status Card -->
+        <div id="progress-card" class="panel-card progress-card hidden">
+          <div class="progress-header">
+            <div id="prog-status" class="prog-title">Ready</div>
+            <div id="prog-eta" class="prog-eta">ETA: --</div>
+          </div>
+          <div class="progress-bar-track">
+            <div id="prog-fill" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <div class="progress-metrics">
+            <div class="metric"><span class="m-label">Stage:</span> <span id="m-stage" class="m-val">Idle</span></div>
+            <div class="metric"><span class="m-label">Speed:</span> <span id="m-speed" class="m-val">--</span></div>
+            <div class="metric"><span class="m-label">Volume:</span> <span id="m-vol" class="m-val">--</span></div>
+          </div>
+          <div class="progress-actions">
+            <button id="btn-pipeline-pause" class="btn btn-secondary btn-sm" onclick="togglePausePipeline()">
+              ⏸️ Pause
+            </button>
+            <button id="btn-pipeline-stop" class="btn btn-danger btn-sm" onclick="stopPipeline()">
+              🛑 Stop
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

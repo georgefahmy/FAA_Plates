@@ -47,24 +47,24 @@ To install or verify requirements:
 
 ---
 
-## 🖥️ Native macOS Desktop Applet (`FAA Plate Enhancer.app`)
+## 🖥️ Native macOS Cockpit Desktop App (`FAA Plate Enhancer.app`)
 
-Instead of opening in a web browser, the application can run as a **native standalone desktop applet** powered by macOS WebKit (`pywebview`). This wraps the local engine in a dedicated native macOS window with no browser tabs, no address bar, and no browser chrome.
+A high-performance **native desktop application** built specifically for pilots and RV-7 builders, completely replacing Streamlit with a clean, low-text, dark-mode cockpit interface powered by macOS native WebKit (`pywebview`):
 
-### How to Launch the Desktop App
+- **Zero Web Server Overhead:** Runs directly in memory via native Python-to-JavaScript IPC bindings. Starts in milliseconds with no port binding or web browser required.
+- **Minimalist Cockpit Mode:** Eliminated all paragraphs, markdown headers, and clutter. Features quick-type airport autocompletion, 4-color tactical pills (Cyan, Magenta, Amber, Red), category/minimum selectors, and full-bleed high-res chart display with pan & zoom.
+- **Unified Dynon Nav & ChartData Pipeline:** Integrates the Dynon Aviation & Obstacle Database (`.duc`) downloader directly from your `n890gf_tracker` project. Manage official Dynon navigation databases and FAA georeferenced approach plates in one single screen.
+- **One-Click Dynon Export:** Simple pipeline with live cycle dropdowns from FAA.gov and Dynon, directory selectors, and animated progress bar with speed (MB/s) and countdown ETA.
 
-1. **Double-Click the Application Bundle:**
-   - Double-click `FAA Plate Enhancer.app` in Finder, or drag it to your macOS `/Applications` folder or Dock.
-2. **Or Launch via Shell Script:**
+### Launching the Desktop App
+
+1. **Double-Click in Finder:**
+   - Double-click `FAA Plate Enhancer.app` in the project folder (or drag it to your macOS `/Applications` folder or Dock).
+2. **Or Launch via Terminal:**
    ```bash
    ./run_desktop.sh
+   # or: ~/.virtualenvs/plates/bin/python desktop_app.py
    ```
-3. **Or Run via Python:**
-   ```bash
-   ~/.virtualenvs/plates/bin/python desktop_app.py
-   ```
-
-When you close the desktop app window or press `Cmd+Q`, the local background server process is automatically terminated cleanly.
 
 ---
 
@@ -87,7 +87,7 @@ The Web UI features two distinct operation modes:
 - **Pilot Briefing & Downloads:** Generates Markdown "5 A's" briefing summary and one-click downloads for enhanced vector `.pdf` and high-res `.png`.
 
 ### 2. ⚡ FAA ChartData & Plates Generator (Dynon PNG / Airmate PDF)
-- **📥 Direct FAA Raw Data Downloader & Extractor:** Download official 28-day cycle terminal procedure volume archives (`DDTPPA`..`E`) straight from FAA Aeronautical Information Services (`aeronav.faa.gov`), automatically extracting them into `/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data` and cleaning up temporary archives to save ~3.7 GB of disk space.
+- **📥 Direct FAA Raw Data Downloader & Extractor:** Download official 28-day cycle terminal procedure volume archives (`DDTPPA`..`E`) straight from FAA Aeronautical Information Services (`aeronav.faa.gov`), automatically extracting them into `/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data` and cleaning up temporary archives to save ~3.7 GB of disk space.
 - **🚀 One-Click End-to-End Generation:** Download fresh FAA volumes, extract them, and immediately build the complete Dynon SkyView `ChartData` package in a single uninterrupted action.
 - **Configurable Source & Destination Paths:** Customize the FAA `d-TPP_Metafile.xml` path, source PDF directory (`DDTPPA..E` + `DCS`), and output destination (`ChartData`).
 - **Dynon Avionics SkyView (PNG) vs Mobile EFB (PDF):**
@@ -108,12 +108,12 @@ The Web UI features two distinct operation modes:
 ### 1. Single Plate Enhancement
 ```bash
 # Enhance a single FAA vector PDF to PNG:
-~/.virtualenvs/plates/bin/python cli.py /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
+~/.virtualenvs/plates/bin/python cli.py /Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
   -o e16_rnav32_enhanced.png \
   --categories A B --approaches LPV LNAV/VNAV
 
 # Enhance directly to vector PDF:
-~/.virtualenvs/plates/bin/python cli.py /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
+~/.virtualenvs/plates/bin/python cli.py /Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data/DDTPPD_261001/09260R32.PDF \
   -o e16_rnav32_enhanced.pdf
 
 # Select airport from catalog and output pilot briefing:
@@ -176,12 +176,12 @@ Dynon SkyView displays georeferenced approach plates and airport diagrams as ras
 ```bash
 # Generate Dynon-compatible folder with Enhanced PNGs (4-color briefing for IAC):
 ~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
-  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --output-dir /Users/GFahmy/Documents/RV-7/Software/sv_software/ChartData \
   --format png --enhanced --workers 8
 
 # Generate Dynon-compatible folder with Non-Enhanced / Standard clean PNGs:
 ~/.virtualenvs/plates/bin/python recreate_airmate_chartdata.py \
-  --output-dir /Users/GFahmy/Documents/RV-7/Airmate/ChartData \
+  --output-dir /Users/GFahmy/Documents/RV-7/Software/sv_software/ChartData \
   --format png --non-enhanced --workers 8
 
 # Quick validation test on first 20 plates:

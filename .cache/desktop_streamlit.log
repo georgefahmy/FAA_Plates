@@ -1,8 +1,8 @@
-2026-10-23 21:31:02.134 Uvicorn server started on 127.0.0.1:8502
+2026-10-25 12:58:36.787 Uvicorn server started on 127.0.0.1:8503
 
   You can now view your Streamlit app in your browser.
 
-  URL: http://127.0.0.1:8502
+  URL: http://127.0.0.1:8503
 
   For better performance, install the Watchdog module:
 

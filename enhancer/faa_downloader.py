@@ -4,7 +4,7 @@ FAA d-TPP Raw Data Downloader & Extractor (`enhancer/faa_downloader.py`).
 Downloads official FAA d-TPP volume zip archives (DDTPPA..E) from:
 https://aeronav.faa.gov/upload_313-d/terminal/
 and extracts them directly into the target FAA PDF data directory:
-e.g. /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml
+e.g. /Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+from enhancer.pipeline_controller import PipelineController
 
 FAA_DTPP_WEBPAGE = "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/"
 FAA_BASE_URL = "https://aeronav.faa.gov/upload_313-d/terminal"
@@ -149,6 +151,7 @@ def download_file(
     total_vols: int,
     progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
     chunk_size: int = 1024 * 1024,  # 1 MB chunk
+    controller: Optional[PipelineController] = None,
 ) -> int:
     """
     Download a single file from URL to dest_path with live chunk progress updates.
@@ -187,6 +190,14 @@ def download_file(
 
         with open(temp_path, "wb") as f_out:
             while True:
+                if controller and not controller.check_point():
+                    if temp_path.exists():
+                        try:
+                            temp_path.unlink()
+                        except Exception:
+                            pass
+                    return 0
+
                 chunk = resp.read(chunk_size)
                 if not chunk:
                     break
@@ -227,6 +238,7 @@ def extract_volume_zip(
     volume_idx: int,
     total_vols: int,
     progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+    controller: Optional[PipelineController] = None,
 ) -> int:
     """Extract a volume zip into target_extract_dir with progress reporting."""
     target_extract_dir.mkdir(parents=True, exist_ok=True)
@@ -238,6 +250,9 @@ def extract_volume_zip(
         last_cb_time = 0.0
 
         for idx, member in enumerate(members):
+            if controller and not controller.check_point():
+                return idx
+
             zf.extract(member, target_extract_dir)
 
             now = time.time()
@@ -266,10 +281,11 @@ def extract_volume_zip(
 
 def download_and_extract_faa_volumes(
     edition: str = DEFAULT_EDITION,
-    target_dir: Path = Path("/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data"),
+    target_dir: Path = Path("/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data"),
     volumes: Optional[List[str]] = None,
     delete_zips_after_extract: bool = True,
     progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+    controller: Optional[PipelineController] = None,
 ) -> Dict[str, object]:
     """
     Main orchestration routine to download and extract FAA d-TPP volumes:
@@ -289,6 +305,16 @@ def download_and_extract_faa_volumes(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     for idx, vol in enumerate(vols, start=1):
+        if controller and not controller.check_point():
+            return {
+                "success": False,
+                "stopped": True,
+                "error": "Pipeline stopped by user",
+                "extracted_dirs": extracted_dirs,
+                "total_bytes": total_bytes,
+                "xml_path": None,
+            }
+
         vol_name = f"DDTPP{vol}"
         url = urls[vol_name]
         zip_file = target_dir / f"{vol_name}_{edition}.zip"
@@ -302,8 +328,19 @@ def download_and_extract_faa_volumes(
             volume_idx=idx,
             total_vols=total_vols,
             progress_callback=progress_callback,
+            controller=controller,
         )
         total_bytes += bytes_dl
+
+        if controller and controller.is_stopped:
+            return {
+                "success": False,
+                "stopped": True,
+                "error": "Pipeline stopped by user",
+                "extracted_dirs": extracted_dirs,
+                "total_bytes": total_bytes,
+                "xml_path": None,
+            }
 
         # 2. Extract
         extract_volume_zip(
@@ -313,8 +350,19 @@ def download_and_extract_faa_volumes(
             volume_idx=idx,
             total_vols=total_vols,
             progress_callback=progress_callback,
+            controller=controller,
         )
         extracted_dirs[vol_name] = extract_folder
+
+        if controller and controller.is_stopped:
+            return {
+                "success": False,
+                "stopped": True,
+                "error": "Pipeline stopped by user",
+                "extracted_dirs": extracted_dirs,
+                "total_bytes": total_bytes,
+                "xml_path": None,
+            }
 
         # 3. Clean up zip
         if delete_zips_after_extract and zip_file.exists():

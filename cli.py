@@ -29,7 +29,7 @@ from enhancer.cv_layout import detect_plate_layout
 from enhancer.ocr_engine import OCREngine
 from enhancer.pdf_engine import load_pdf_plate
 from enhancer.plate_browser import DEFAULT_FAA_PDF_DIR, DTPPPlateBrowser
-from enhancer.rules import RuleEngine
+from enhancer.rules import ExtractedPlateMetadata, RuleEngine, is_approach_plate
 from enhancer.sample_plate import create_sample_faa_plate
 
 
@@ -40,21 +40,44 @@ def enhance_pdf_plate(
     target_approaches: List[str] | None = None,
     enabled_colors: set[str] | None = None,
     opacity_scale: float = 1.0,
+    chart_code: str | None = None,
+    verify_safety: bool = True,
+    generate_briefing: bool = True,
+    return_base: bool = False,
 ):
     """
     Full deterministic PDF vector pipeline:
     1. Render locked high-DPI RGBA base image from the FAA d-TPP PDF.
     2. Extract exact vector text lines, rotated quads, and vector paths (`lw=1.44`, `lw=0.72`, Bezier MSA circle).
-    3. Evaluate deterministic 4-Color Tactical Briefing rules.
-    4. Render morphological flight-path ribbons, rotated quads, and rounded boxes onto a separate RGBA overlay.
-    5. Verify 100% untouched base pixel integrity and generate Markdown "5 A's" briefing.
+    3. Verify document is an Instrument Approach Procedure (IAP). Non-approach charts
+       (Minimums, Airport Diagrams, SIDs, STARs) remain 100% clean without tactical overlays.
+    4. Evaluate deterministic 4-Color Tactical Briefing rules.
+    5. Render morphological flight-path ribbons, rotated quads, and rounded boxes onto a separate RGBA overlay.
+    6. Verify 100% untouched base pixel integrity and generate Markdown "5 A's" briefing.
     """
     locked_base, tokens, lines, layout = load_pdf_plate(pdf_source, dpi_scale=dpi_scale)
+
+    if not is_approach_plate(lines, chart_code=chart_code):
+        overlay = Image.new("RGBA", locked_base.size, (0, 0, 0, 0))
+        meta = ExtractedPlateMetadata()
+        meta.is_approach_plate = False
+        meta.document_type = chart_code or "STANDARD"
+        meta.title = "Standard Document (Non-Approach Chart)"
+        briefing_md = (
+            "### Standard Document (Non-Approach Chart)\n\n"
+            "Tactical briefing highlights (Cyan comms, Magenta flight path, Amber missed approach, "
+            "Red restrictions) are strictly and exclusively applied to Instrument Approach Procedures (IAPs).\n\n"
+            "This document is rendered cleanly in its original FAA format without overlay modifications."
+        )
+        if return_base:
+            return locked_base, overlay, [], meta, briefing_md, locked_base
+        return locked_base, overlay, [], meta, briefing_md
 
     rule_engine = RuleEngine(
         aircraft_categories=aircraft_categories or ["A", "B"],
         target_approaches=target_approaches or ["LPV", "LNAV/VNAV"],
         enabled_colors=enabled_colors or {"CYAN", "MAGENTA", "AMBER", "RED"},
+        chart_code=chart_code,
     )
     highlights, metadata = rule_engine.evaluate(tokens, lines, layout)
 
@@ -64,18 +87,25 @@ def enhance_pdf_plate(
         opacity_scale=opacity_scale,
     )
 
-    if not verify_base_pixel_integrity(locked_base, composited, overlay):
-        raise RuntimeError(
-            "CRITICAL SAFETY VIOLATION: Base pixels outside highlight overlay were modified!"
-        )
+    if verify_safety:
+        if not verify_base_pixel_integrity(locked_base, composited, overlay):
+            raise RuntimeError(
+                "CRITICAL SAFETY VIOLATION: Base pixels outside highlight overlay were modified!"
+            )
 
-    briefing_md = generate_5a_briefing(
-        metadata,
-        highlights,
-        aircraft_categories=rule_engine.aircraft_categories,
-        target_approaches=rule_engine.target_approaches,
+    briefing_md = (
+        generate_5a_briefing(
+            metadata,
+            highlights,
+            aircraft_categories=rule_engine.aircraft_categories,
+            target_approaches=rule_engine.target_approaches,
+        )
+        if generate_briefing
+        else ""
     )
 
+    if return_base:
+        return composited, overlay, highlights, metadata, briefing_md, locked_base
     return composited, overlay, highlights, metadata, briefing_md
 
 
@@ -86,6 +116,7 @@ def enhance_plate_image(
     target_approaches: List[str] | None = None,
     enabled_colors: set[str] | None = None,
     opacity_scale: float = 1.0,
+    chart_code: str | None = None,
 ):
     """Fallback deterministic pipeline for raster `.png` / `.jpg` plates."""
     locked_base = image.convert("RGBA")
@@ -93,10 +124,25 @@ def enhance_plate_image(
     ocr = OCREngine(backend=ocr_backend, scale_factor=2.0)
     tokens, lines = ocr.extract(locked_base, vertical_lines_x=layout.vertical_lines_x)
 
+    if not is_approach_plate(lines, chart_code=chart_code):
+        overlay = Image.new("RGBA", locked_base.size, (0, 0, 0, 0))
+        meta = ExtractedPlateMetadata()
+        meta.is_approach_plate = False
+        meta.document_type = chart_code or "STANDARD"
+        meta.title = "Standard Document (Non-Approach Chart)"
+        briefing_md = (
+            "### Standard Document (Non-Approach Chart)\n\n"
+            "Tactical briefing highlights (Cyan comms, Magenta flight path, Amber missed approach, "
+            "Red restrictions) are strictly and exclusively applied to Instrument Approach Procedures (IAPs).\n\n"
+            "This document is rendered cleanly in its original FAA format without overlay modifications."
+        )
+        return locked_base, overlay, [], meta, briefing_md
+
     rule_engine = RuleEngine(
         aircraft_categories=aircraft_categories or ["A", "B"],
         target_approaches=target_approaches or ["LPV", "LNAV/VNAV"],
         enabled_colors=enabled_colors or {"CYAN", "MAGENTA", "AMBER", "RED"},
+        chart_code=chart_code,
     )
     highlights, metadata = rule_engine.evaluate(tokens, lines, layout)
 

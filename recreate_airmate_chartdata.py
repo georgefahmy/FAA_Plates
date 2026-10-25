@@ -15,14 +15,15 @@ Builds a singular, standardized ChartData structure matching the mobile EFB layo
             └── ... (official FAA d-TPP & DCS PDFs, all strictly single-page!)
 
 Built 100% natively from:
-- Primary XML: /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml
-- FAA PDF Source: /Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data (DDTPPA..E and DCS volumes)
+- Primary XML: /Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml
+- FAA PDF Source: /Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data (DDTPPA..E and DCS volumes)
 - ZERO dependency on external reference data by default.
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import os
 import re
@@ -31,10 +32,17 @@ import sqlite3
 import sys
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+try:
+    from enhancer.pipeline_controller import PipelineController
+except ImportError:
+    PipelineController = None
+
 
 @dataclass
 class RecreateProgress:
@@ -55,7 +63,9 @@ except ImportError:
     try:
         import fitz as pymupdf
     except ImportError:
-        print("[!] Error: PyMuPDF ('pymupdf' or 'fitz') is required. Install via: pip install pymupdf")
+        print(
+            "[!] Error: PyMuPDF ('pymupdf' or 'fitz') is required. Install via: pip install pymupdf"
+        )
         sys.exit(1)
 
 try:
@@ -77,8 +87,9 @@ except ImportError:
     DEFAULT_VOLUMES = ["A", "B", "C", "D", "E"]
 
 
-DEFAULT_FAA_DATA_DIR = Path("/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data")
-DEFAULT_OUTPUT_DIR = Path("/Users/GFahmy/Documents/RV-7/Airmate/ChartData")
+DEFAULT_FAA_DATA_DIR = Path("/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data")
+DEFAULT_OUTPUT_DIR = Path("/Users/GFahmy/Documents/RV-7/Software/sv_software/ChartData")
+DEFAULT_WORKERS = max(4, min(12, (os.cpu_count() or 8) - 2))
 
 
 def find_latest_dtpp_xml(faa_data_dir: Path) -> Optional[Path]:
@@ -93,20 +104,20 @@ def find_latest_dtpp_xml(faa_data_dir: Path) -> Optional[Path]:
 
 
 DEFAULT_XML_PATH = find_latest_dtpp_xml(DEFAULT_FAA_DATA_DIR) or Path(
-    "/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml"
+    "/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data/DDTPPE_261001/d-TPP_Metafile.xml"
 )
 
 # Mapping of FAA d-TPP chart codes to standard chart categories
 CHART_CODE_MAP = {
-    "IAP": "IAC",    # Instrument Approach Procedure -> Instrument Approach Chart
-    "STR": "STAR",   # Standard Terminal Arrival -> STAR
-    "ODP": "DPO",    # Obstacle Departure Procedure -> DPO
-    "APD": "APD",    # Airport Diagram
-    "DP": "DP",      # Departure Procedure
-    "MIN": "MIN",    # Minimums
-    "HOT": "HOT",    # Hot Spot
-    "LAH": "LAH",    # Land and Hold Short
-    "DAU": "IAC",    # AAUP
+    "IAP": "IAC",  # Instrument Approach Procedure -> Instrument Approach Chart
+    "STR": "STAR",  # Standard Terminal Arrival -> STAR
+    "ODP": "DPO",  # Obstacle Departure Procedure -> DPO
+    "APD": "APD",  # Airport Diagram
+    "DP": "DP",  # Departure Procedure
+    "MIN": "MIN",  # Minimums
+    "HOT": "HOT",  # Hot Spot
+    "LAH": "LAH",  # Land and Hold Short
+    "DAU": "IAC",  # AAUP
 }
 
 DEFAULT_COUNTRIES = [
@@ -195,7 +206,11 @@ def extract_georef_from_pdf(pdf_path: Path) -> Optional[dict]:
         gpts = [float(v) for v in gpts_m.group(1).split()]
         bbox = [float(v) for v in bbox_m.group(1).split()]
         lpts_m = re.search(r"/LPTS\s*\[([^\]]+)\]", vp_str)
-        lpts = [float(v) for v in lpts_m.group(1).split()] if lpts_m else [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9]
+        lpts = (
+            [float(v) for v in lpts_m.group(1).split()]
+            if lpts_m
+            else [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9]
+        )
 
         bx0, by0, bx1, by1 = bbox
         bw = bx1 - bx0
@@ -272,9 +287,11 @@ def extract_georef_from_pdf(pdf_path: Path) -> Optional[dict]:
                 phi = math.pi / 2 - 2 * math.atan(t)
                 for _ in range(5):
                     con = e * math.sin(phi)
-                    dphi = math.pi / 2 - 2 * math.atan(
-                        t * ((1 - con) / (1 + con)) ** (e / 2)
-                    ) - phi
+                    dphi = (
+                        math.pi / 2
+                        - 2 * math.atan(t * ((1 - con) / (1 + con)) ** (e / 2))
+                        - phi
+                    )
                     phi += dphi
                     if abs(dphi) < 1e-10:
                         break
@@ -368,11 +385,17 @@ def render_plate_to_png(
                     target_approaches=target_approaches,
                     enabled_colors=enabled_colors,
                     opacity_scale=opacity_scale,
+                    chart_code="IAP",
+                    verify_safety=False,
+                    generate_briefing=False,
                 )
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp_path = dst_path.with_name(f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}")
+                tmp_path = dst_path.with_name(
+                    f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}"
+                )
                 comp.save(tmp_path, format="PNG")
                 tmp_path.replace(dst_path)
+                del comp
                 return True
             except Exception:
                 # Fallback to standard PyMuPDF render if enhancement encounters unusual PDF vector structure
@@ -382,9 +405,13 @@ def render_plate_to_png(
         page = doc[page_idx]
         pix = page.get_pixmap(dpi=dpi, alpha=False)
         dst_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = dst_path.with_name(f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}")
+        tmp_path = dst_path.with_name(
+            f"tmp_{os.getpid()}_{time.time_ns()}_{dst_path.name}"
+        )
         pix.save(str(tmp_path))
+        del pix
         doc.close()
+        del doc
         tmp_path.replace(dst_path)
         return True
     except Exception as e:
@@ -482,7 +509,9 @@ def index_source_pdfs(faa_data_dir: Path) -> Tuple[Dict[str, Path], Dict[str, in
                 pdf_map[name_u] = path
 
     elapsed = time.time() - start_t
-    print(f"[+] Found {len(pdf_map):,} unique PDF files in {elapsed:.2f}s. Checking page counts ...")
+    print(
+        f"[+] Found {len(pdf_map):,} unique PDF files in {elapsed:.2f}s. Checking page counts ..."
+    )
 
     t_pages_start = time.time()
     multi_count = 0
@@ -497,17 +526,23 @@ def index_source_pdfs(faa_data_dir: Path) -> Tuple[Dict[str, Path], Dict[str, in
         except Exception:
             page_counts[name_u] = 1
 
-    print(f"[+] Checked page counts in {time.time() - t_pages_start:.2f}s: {multi_count:,} multi-page PDFs identified.")
+    print(
+        f"[+] Checked page counts in {time.time() - t_pages_start:.2f}s: {multi_count:,} multi-page PDFs identified."
+    )
     return pdf_map, page_counts
 
 
-def load_optional_reference_db(ref_db_path: Optional[Path]) -> Tuple[
-    Dict[str, int],                           # ident -> Airports_Id
-    Dict[Tuple[str, str], dict],              # (ident, chart_name) -> georef fields
-    Dict[Tuple[str, str], List[Tuple[str, str]]], # (ident, base_stem) -> list of (Chart_Name, File_Name)
-    List[tuple],                              # COUNTRIES rows
-    List[tuple],                              # REGIONS rows
-    int                                       # max_airport_id
+def load_optional_reference_db(
+    ref_db_path: Optional[Path],
+) -> Tuple[
+    Dict[str, int],  # ident -> Airports_Id
+    Dict[Tuple[str, str], dict],  # (ident, chart_name) -> georef fields
+    Dict[
+        Tuple[str, str], List[Tuple[str, str]]
+    ],  # (ident, base_stem) -> list of (Chart_Name, File_Name)
+    List[tuple],  # COUNTRIES rows
+    List[tuple],  # REGIONS rows
+    int,  # max_airport_id
 ]:
     """Optional loader if an external reference DB is explicitly provided via --reference-db."""
     airport_id_map: Dict[str, int] = {}
@@ -518,7 +553,14 @@ def load_optional_reference_db(ref_db_path: Optional[Path]) -> Tuple[
     max_airport_id = 0
 
     if not ref_db_path or not ref_db_path.is_file():
-        return airport_id_map, georef_map, ref_booklet_map, countries_rows, regions_rows, max_airport_id
+        return (
+            airport_id_map,
+            georef_map,
+            ref_booklet_map,
+            countries_rows,
+            regions_rows,
+            max_airport_id,
+        )
 
     print(f"[*] Loading optional reference DB from: {ref_db_path} ...")
     try:
@@ -552,18 +594,33 @@ def load_optional_reference_db(ref_db_path: Optional[Path]) -> Tuple[
 
             if row[3]:
                 georef_map[(apt_ident, chart_name.upper())] = {
-                    "Lat1": row[3], "Long1": row[4], "Lat2": row[5], "Long2": row[6],
-                    "X1": row[7], "Y1": row[8], "X2": row[9], "Y2": row[10],
-                    "Orientation": row[11], "Draw_Left": row[12], "Draw_Right": row[13],
-                    "Draw_Top": row[14], "Draw_Bottom": row[15],
-                    "ValidWithinX": row[16], "ValidWithinY": row[17],
-                    "ValidWithinRadius": row[18], "ExcludeAreas": row[19],
+                    "Lat1": row[3],
+                    "Long1": row[4],
+                    "Lat2": row[5],
+                    "Long2": row[6],
+                    "X1": row[7],
+                    "Y1": row[8],
+                    "X2": row[9],
+                    "Y2": row[10],
+                    "Orientation": row[11],
+                    "Draw_Left": row[12],
+                    "Draw_Right": row[13],
+                    "Draw_Top": row[14],
+                    "Draw_Bottom": row[15],
+                    "ValidWithinX": row[16],
+                    "ValidWithinY": row[17],
+                    "ValidWithinRadius": row[18],
+                    "ExcludeAreas": row[19],
                 }
 
-            m_stem = re.match(r"^([A-Z0-9]+?)(?:0\d+|\d+)\.(?:png|pdf)$", file_name, re.IGNORECASE)
+            m_stem = re.match(
+                r"^([A-Z0-9]+?)(?:0\d+|\d+)\.(?:png|pdf)$", file_name, re.IGNORECASE
+            )
             if m_stem:
                 base_stem = m_stem.group(1).upper()
-                ref_booklet_map.setdefault((apt_ident, base_stem), []).append((chart_name, file_name))
+                ref_booklet_map.setdefault((apt_ident, base_stem), []).append(
+                    (chart_name, file_name)
+                )
 
         try:
             c.execute("SELECT ID, CODE, NAME, COUNTRY_AERO, CONTINENT FROM COUNTRIES")
@@ -572,17 +629,28 @@ def load_optional_reference_db(ref_db_path: Optional[Path]) -> Tuple[
             pass
 
         try:
-            c.execute("SELECT ID, GLOBALCODE, LOCALCODE, NAME, CONTINENT, COUNTRY FROM REGIONS")
+            c.execute(
+                "SELECT ID, GLOBALCODE, LOCALCODE, NAME, CONTINENT, COUNTRY FROM REGIONS"
+            )
             regions_rows = c.fetchall()
         except sqlite3.OperationalError:
             pass
 
         conn.close()
-        print(f"[+] Loaded {len(airport_id_map):,} airport IDs and {len(georef_map):,} georef records from reference DB.")
+        print(
+            f"[+] Loaded {len(airport_id_map):,} airport IDs and {len(georef_map):,} georef records from reference DB."
+        )
     except Exception as e:
         print(f"[!] Warning reading reference DB: {e}")
 
-    return airport_id_map, georef_map, ref_booklet_map, countries_rows, regions_rows, max_airport_id
+    return (
+        airport_id_map,
+        georef_map,
+        ref_booklet_map,
+        countries_rows,
+        regions_rows,
+        max_airport_id,
+    )
 
 
 def build_chartdata(
@@ -593,7 +661,7 @@ def build_chartdata(
     output_format: str = "png",
     png_mode: str = "enhanced",
     dpi: int = 200,
-    workers: int = 8,
+    workers: int = DEFAULT_WORKERS,
     link_mode: str = "hardlink",
     include_afd: bool = True,
     chart_code_style: str = "airmate",
@@ -604,6 +672,7 @@ def build_chartdata(
     enabled_colors: Optional[Set[str]] = None,
     opacity_scale: float = 1.0,
     progress_callback: Optional[Callable[[RecreateProgress], None]] = None,
+    controller: Optional[PipelineController] = None,
 ) -> dict:
     """Main execution routine to build the ChartData directory and Plates.sqlite strictly from FAA data."""
     start_total_t = time.time()
@@ -612,7 +681,9 @@ def build_chartdata(
     if not xml_path.is_file():
         alt_xml = find_latest_dtpp_xml(faa_data_dir)
         if alt_xml and alt_xml.is_file():
-            print(f"[*] Provided XML '{xml_path}' not found, auto-detected latest: {alt_xml}")
+            print(
+                f"[*] Provided XML '{xml_path}' not found, auto-detected latest: {alt_xml}"
+            )
             xml_path = alt_xml
         else:
             raise FileNotFoundError(f"d-TPP XML metafile not found at: {xml_path}")
@@ -647,11 +718,20 @@ def build_chartdata(
     next_airport_id = 1
 
     if ref_db_path:
-        ref_airport_ids, ref_georef, ref_booklets, countries_rows, regions_rows, max_aid = load_optional_reference_db(ref_db_path)
+        (
+            ref_airport_ids,
+            ref_georef,
+            ref_booklets,
+            countries_rows,
+            regions_rows,
+            max_aid,
+        ) = load_optional_reference_db(ref_db_path)
         if max_aid > 0:
             next_airport_id = max_aid + 1
     else:
-        print("[*] Building standalone ChartData strictly from official FAA XML and source PDFs.")
+        print(
+            "[*] Building standalone ChartData strictly from official FAA XML and source PDFs."
+        )
 
     # Prepare output directories
     plates_dir = output_dir / "Plates"
@@ -807,7 +887,9 @@ def build_chartdata(
 
     for state_el in root.findall("state_code"):
         state_code = str(state_el.attrib.get("ID") or "").strip().upper()
-        state_fullname = str(state_el.attrib.get("state_fullname") or state_code).strip().title()
+        state_fullname = (
+            str(state_el.attrib.get("state_fullname") or state_code).strip().title()
+        )
 
         # Build REGIONS row dynamically from XML
         if not ref_db_path:
@@ -878,7 +960,9 @@ def build_chartdata(
                     pdf_name_u = pdf_name.upper()
                     page_cnt = page_counts.get(pdf_name_u, 1)
 
-                    raw_chart_code = str(rec_el.findtext("chart_code") or "").strip().upper()
+                    raw_chart_code = (
+                        str(rec_el.findtext("chart_code") or "").strip().upper()
+                    )
                     if chart_code_style == "airmate":
                         chart_code = CHART_CODE_MAP.get(raw_chart_code, raw_chart_code)
                     else:
@@ -901,23 +985,57 @@ def build_chartdata(
 
                     # Fallback to optional reference DB (e.g. for airport diagrams without /VP)
                     if not georef and ref_georef:
-                        georef = ref_georef.get((ident, orig_chart_name.upper())) or ref_georef.get((apt_id, orig_chart_name.upper()))
+                        georef = ref_georef.get(
+                            (ident, orig_chart_name.upper())
+                        ) or ref_georef.get((apt_id, orig_chart_name.upper()))
 
                     if georef:
                         matched_georef_count += 1
                         lat1, long1 = str(georef["Lat1"]), str(georef["Long1"])
                         lat2, long2 = str(georef["Lat2"]), str(georef["Long2"])
-                        x1 = str(georef.get("X1") if georef.get("X1") is not None else "0.0")
-                        y1 = str(georef.get("Y1") if georef.get("Y1") is not None else "0.0")
-                        x2 = str(georef.get("X2") if georef.get("X2") is not None else "1.0")
-                        y2 = str(georef.get("Y2") if georef.get("Y2") is not None else "1.0")
-                        orient = str(georef.get("Orientation") if georef.get("Orientation") is not None else "0.0")
-                        d_left = str(georef.get("Draw_Left") if georef.get("Draw_Left") is not None else "0.0")
-                        d_right = str(georef.get("Draw_Right") if georef.get("Draw_Right") is not None else "1.0")
-                        d_top = str(georef.get("Draw_Top") if georef.get("Draw_Top") is not None else "0.0")
-                        d_bottom = str(georef.get("Draw_Bottom") if georef.get("Draw_Bottom") is not None else "1.0")
-                        v_x, v_y = georef.get("ValidWithinX"), georef.get("ValidWithinY")
-                        v_rad, exc_areas = georef.get("ValidWithinRadius"), georef.get("ExcludeAreas")
+                        x1 = str(
+                            georef.get("X1") if georef.get("X1") is not None else "0.0"
+                        )
+                        y1 = str(
+                            georef.get("Y1") if georef.get("Y1") is not None else "0.0"
+                        )
+                        x2 = str(
+                            georef.get("X2") if georef.get("X2") is not None else "1.0"
+                        )
+                        y2 = str(
+                            georef.get("Y2") if georef.get("Y2") is not None else "1.0"
+                        )
+                        orient = str(
+                            georef.get("Orientation")
+                            if georef.get("Orientation") is not None
+                            else "0.0"
+                        )
+                        d_left = str(
+                            georef.get("Draw_Left")
+                            if georef.get("Draw_Left") is not None
+                            else "0.0"
+                        )
+                        d_right = str(
+                            georef.get("Draw_Right")
+                            if georef.get("Draw_Right") is not None
+                            else "1.0"
+                        )
+                        d_top = str(
+                            georef.get("Draw_Top")
+                            if georef.get("Draw_Top") is not None
+                            else "0.0"
+                        )
+                        d_bottom = str(
+                            georef.get("Draw_Bottom")
+                            if georef.get("Draw_Bottom") is not None
+                            else "1.0"
+                        )
+                        v_x, v_y = georef.get("ValidWithinX"), georef.get(
+                            "ValidWithinY"
+                        )
+                        v_rad, exc_areas = georef.get("ValidWithinRadius"), georef.get(
+                            "ExcludeAreas"
+                        )
                     else:
                         lat1 = long1 = lat2 = long2 = None
                         x1 = y1 = x2 = y2 = None
@@ -932,7 +1050,10 @@ def build_chartdata(
                     if page_cnt <= 1:
                         if pdf_name_u in single_page_needed:
                             curr_tname, curr_iac = single_page_needed[pdf_name_u]
-                            single_page_needed[pdf_name_u] = (chart_target_name, curr_iac or is_iac)
+                            single_page_needed[pdf_name_u] = (
+                                chart_target_name,
+                                curr_iac or is_iac,
+                            )
                         else:
                             single_page_needed[pdf_name_u] = (chart_target_name, is_iac)
 
@@ -947,10 +1068,23 @@ def build_chartdata(
                                 None,
                                 faanfd18,
                                 copter,
-                                lat1, long1, lat2, long2,
-                                x1, y1, x2, y2,
-                                orient, d_left, d_right, d_top, d_bottom,
-                                v_x, v_y, v_rad, exc_areas,
+                                lat1,
+                                long1,
+                                lat2,
+                                long2,
+                                x1,
+                                y1,
+                                x2,
+                                y2,
+                                orient,
+                                d_left,
+                                d_right,
+                                d_top,
+                                d_bottom,
+                                v_x,
+                                v_y,
+                                v_rad,
+                                exc_areas,
                                 user_action,
                                 "false",
                                 last_changed,
@@ -965,11 +1099,20 @@ def build_chartdata(
                         stem_u = stem.upper()
 
                         # Check reference DB first if explicitly provided
-                        ref_entries = ref_booklets.get((ident, stem_u)) or ref_booklets.get((apt_id, stem_u)) if ref_db_path else None
+                        ref_entries = (
+                            ref_booklets.get((ident, stem_u))
+                            or ref_booklets.get((apt_id, stem_u))
+                            if ref_db_path
+                            else None
+                        )
 
                         if ref_entries:
                             for ref_cname, ref_fname in ref_entries:
-                                target_chart_name = re.sub(r"\.[pP][dD][fF]$|\.[pP][nN][gG]$", target_ext, ref_fname)
+                                target_chart_name = re.sub(
+                                    r"\.[pP][dD][fF]$|\.[pP][nN][gG]$",
+                                    target_ext,
+                                    ref_fname,
+                                )
                                 charts_to_insert.append(
                                     (
                                         str(airports_id),
@@ -981,10 +1124,23 @@ def build_chartdata(
                                         None,
                                         faanfd18,
                                         copter,
-                                        lat1, long1, lat2, long2,
-                                        x1, y1, x2, y2,
-                                        orient, d_left, d_right, d_top, d_bottom,
-                                        v_x, v_y, v_rad, exc_areas,
+                                        lat1,
+                                        long1,
+                                        lat2,
+                                        long2,
+                                        x1,
+                                        y1,
+                                        x2,
+                                        y2,
+                                        orient,
+                                        d_left,
+                                        d_right,
+                                        d_top,
+                                        d_bottom,
+                                        v_x,
+                                        v_y,
+                                        v_rad,
+                                        exc_areas,
                                         user_action,
                                         "false",
                                         last_changed,
@@ -1002,7 +1158,9 @@ def build_chartdata(
                                 apt_ident=apt_id,
                                 icao_ident=icao_id,
                             )
-                            target_chart_name = format_page_filename(stem, matched_p, target_ext)
+                            target_chart_name = format_page_filename(
+                                stem, matched_p, target_ext
+                            )
                             p_chart_name = f"{orig_chart_name} p.{matched_p}"
                             charts_to_insert.append(
                                 (
@@ -1015,10 +1173,23 @@ def build_chartdata(
                                     None,
                                     faanfd18,
                                     copter,
-                                    lat1, long1, lat2, long2,
-                                    x1, y1, x2, y2,
-                                    orient, d_left, d_right, d_top, d_bottom,
-                                    v_x, v_y, v_rad, exc_areas,
+                                    lat1,
+                                    long1,
+                                    lat2,
+                                    long2,
+                                    x1,
+                                    y1,
+                                    x2,
+                                    y2,
+                                    orient,
+                                    d_left,
+                                    d_right,
+                                    d_top,
+                                    d_bottom,
+                                    v_x,
+                                    v_y,
+                                    v_rad,
+                                    exc_areas,
                                     user_action,
                                     "false",
                                     last_changed,
@@ -1028,7 +1199,9 @@ def build_chartdata(
                                 )
                             )
 
-    print(f"[+] Parsed {len(airports_to_insert):,} d-TPP airports, {len(charts_to_insert):,} charts.")
+    print(
+        f"[+] Parsed {len(airports_to_insert):,} d-TPP airports, {len(charts_to_insert):,} charts."
+    )
 
     # Parse DCS AFD XML (if enabled)
     afd_charts_count = 0
@@ -1079,7 +1252,10 @@ def build_chartdata(
 
                         if page_cnt <= 1:
                             if pdf_name_u not in single_page_needed:
-                                single_page_needed[pdf_name_u] = (target_afd_name, False)
+                                single_page_needed[pdf_name_u] = (
+                                    target_afd_name,
+                                    False,
+                                )
                             afd_charts_count += 1
                             charts_to_insert.append(
                                 (
@@ -1088,11 +1264,27 @@ def build_chartdata(
                                     "70100",
                                     "AFD",
                                     target_afd_name,
-                                    None, None, None, None,
-                                    None, None, None, None,
-                                    None, None, None, None,
-                                    None, None, None, None, None,
-                                    None, None, None, None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
                                     None,
                                     "false",
                                     "",
@@ -1104,7 +1296,9 @@ def build_chartdata(
                         else:
                             multi_page_needed.add(pdf_name)
                             for p in range(1, page_cnt + 1):
-                                target_page_name = format_page_filename(stem, p, target_ext)
+                                target_page_name = format_page_filename(
+                                    stem, p, target_ext
+                                )
                                 afd_charts_count += 1
                                 charts_to_insert.append(
                                     (
@@ -1113,11 +1307,27 @@ def build_chartdata(
                                         "70100",
                                         f"AFD p.{p}",
                                         target_page_name,
-                                        None, None, None, None,
-                                        None, None, None, None,
-                                        None, None, None, None,
-                                        None, None, None, None, None,
-                                        None, None, None, None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
                                         None,
                                         "false",
                                         "",
@@ -1144,7 +1354,9 @@ def build_chartdata(
         )
 
     print("[*] Writing SQLite database records ...")
-    c.executemany("INSERT INTO Airports VALUES (?, ?, ?, ?, ?, ?, ?)", airports_to_insert)
+    c.executemany(
+        "INSERT INTO Airports VALUES (?, ?, ?, ?, ?, ?, ?)", airports_to_insert
+    )
     c.executemany(
         """
         INSERT INTO Charts VALUES (
@@ -1174,7 +1386,9 @@ def build_chartdata(
 
     conn.commit()
     conn.close()
-    print(f"[+] Successfully wrote database: {db_path} ({db_path.stat().st_size:,} bytes)")
+    print(
+        f"[+] Successfully wrote database: {db_path} ({db_path.stat().st_size:,} bytes)"
+    )
 
     # -------------------------------------------------------------
     # Place Chart Files into Plates/US/ (PNG or PDF)
@@ -1188,7 +1402,9 @@ def build_chartdata(
     errors = 0
 
     if output_format == "png":
-        print(f"[*] Preparing Dynon-compatible PNG generation (Mode: {png_mode.upper()}, DPI: {dpi}, Workers: {workers}) ...")
+        print(
+            f"[*] Preparing Dynon-compatible PNG generation (Mode: {png_mode.upper()}, DPI: {dpi}, Workers: {workers}) ..."
+        )
         render_tasks = []
 
         # 1. Single-page chart tasks
@@ -1198,7 +1414,9 @@ def build_chartdata(
                 missing_count += 1
                 continue
             dst_path = us_dir / target_name
-            render_tasks.append((src_path, dst_path, 0, is_iac, png_mode == "enhanced", dpi, None))
+            render_tasks.append(
+                (src_path, dst_path, 0, is_iac, png_mode == "enhanced", dpi, None)
+            )
 
         # 2. Multi-page booklet tasks
         for pdf_name in multi_page_needed:
@@ -1213,17 +1431,27 @@ def build_chartdata(
                 target_name = format_page_filename(stem, page_num, target_ext)
                 dst_path = us_dir / target_name
                 twodigit_name = f"{stem}{page_num:02d}{target_ext}"
-                alias_path = us_dir / twodigit_name if twodigit_name != target_name else None
-                render_tasks.append((src_path, dst_path, page_idx, False, False, dpi, alias_path))
+                alias_path = (
+                    us_dir / twodigit_name if twodigit_name != target_name else None
+                )
+                render_tasks.append(
+                    (src_path, dst_path, page_idx, False, False, dpi, alias_path)
+                )
 
         if limit and limit > 0:
-            print(f"[*] Limiting PNG generation to first {limit} tasks (--limit {limit})")
+            print(
+                f"[*] Limiting PNG generation to first {limit} tasks (--limit {limit})"
+            )
             render_tasks = render_tasks[:limit]
 
         total_tasks = len(render_tasks)
-        print(f"[*] Rendering {total_tasks:,} PNG plates using {workers} concurrent worker threads ...")
+        print(
+            f"[*] Rendering {total_tasks:,} PNG plates using {workers} concurrent worker threads ..."
+        )
 
         def _worker_fn(task):
+            if controller and not controller.check_point():
+                return False, task[1].name
             src_p, dst_p, p_idx, is_iac, enh, d_dpi, alias_p = task
             ok = render_plate_to_png(
                 src_p,
@@ -1248,45 +1476,84 @@ def build_chartdata(
             return ok, dst_p.name
 
         last_cb_time = 0.0
+        task_iter = iter(render_tasks)
+        max_in_flight = max(16, workers * 3)
+        in_flight: Dict[Any, Tuple] = {}
+
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_worker_fn, task): task for task in render_tasks}
-            for fut in as_completed(futures):
-                res, dst_name = fut.result()
-                if res:
-                    completed += 1
-                else:
-                    errors += 1
+            # Seed the pool with a bounded initial window of tasks
+            for task in islice(task_iter, max_in_flight):
+                fut = executor.submit(_worker_fn, task)
+                in_flight[fut] = task
 
-                now = time.time()
-                el = now - t_link_start
-                sp = completed / el if el > 0 else 0
-                eta = (total_tasks - completed) / sp if sp > 0 else 0
+            while in_flight:
+                if controller and not controller.check_point():
+                    print("\n[!] Pipeline stopped by user. Aborting remaining tasks...")
+                    for f in list(in_flight.keys()):
+                        f.cancel()
+                    break
 
-                if completed % 100 == 0 or completed == total_tasks:
-                    print(
-                        f"\r[*] Rendered {completed:,}/{total_tasks:,} PNGs ({completed/total_tasks*100:.1f}%) "
-                        f"— {sp:.1f} pl/s — ETA {int(eta)}s",
-                        end="",
-                        flush=True,
-                    )
+                done, _ = wait(list(in_flight.keys()), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    in_flight.pop(fut, None)
+                    res, dst_name = fut.result()
+                    if res:
+                        completed += 1
+                    else:
+                        errors += 1
 
-                if progress_callback and (now - last_cb_time >= 0.12 or completed == total_tasks):
-                    last_cb_time = now
-                    progress_callback(
-                        RecreateProgress(
-                            stage="rendering",
-                            completed=completed,
-                            total=total_tasks,
-                            speed_per_sec=sp,
-                            elapsed_seconds=el,
-                            eta_seconds=eta,
-                            message=f"Rendered {dst_name}",
-                            current_item=dst_name,
-                            is_success=res,
+                    # Submit the next pending task immediately to keep all workers 100% saturated
+                    next_task = next(task_iter, None)
+                    if next_task is not None:
+                        n_fut = executor.submit(_worker_fn, next_task)
+                        in_flight[n_fut] = next_task
+
+                    # Periodic lightweight garbage collection to reclaim PyMuPDF and Pillow memory
+                    if completed % 500 == 0:
+                        gc.collect()
+
+                    now = time.time()
+                    el = now - t_link_start
+                    sp = completed / el if el > 0 else 0
+                    eta = (total_tasks - completed) / sp if sp > 0 else 0
+
+                    if completed % 100 == 0 or completed == total_tasks:
+                        print(
+                            f"\r[*] Rendered {completed:,}/{total_tasks:,} PNGs ({completed/total_tasks*100:.1f}%) "
+                            f"— {sp:.1f} pl/s — ETA {int(eta)}s",
+                            end="",
+                            flush=True,
                         )
-                    )
+
+                    if progress_callback and (
+                        now - last_cb_time >= 0.12 or completed == total_tasks
+                    ):
+                        last_cb_time = now
+                        progress_callback(
+                            RecreateProgress(
+                                stage="rendering",
+                                completed=completed,
+                                total=total_tasks,
+                                speed_per_sec=sp,
+                                elapsed_seconds=el,
+                                eta_seconds=eta,
+                                message=f"Rendered {dst_name}",
+                                current_item=dst_name,
+                                is_success=res,
+                            )
+                        )
 
         print()
+        if controller and controller.is_stopped:
+            return {
+                "success": False,
+                "stopped": True,
+                "total_airports": total_airports,
+                "total_charts": total_charts,
+                "completed": completed,
+                "output_dir": str(output_dir),
+                "error": "Pipeline stopped by user",
+            }
         link_elapsed = time.time() - t_link_start
     else:
         # PDF format: Place genuine single-page PDFs via link/copy
@@ -1294,13 +1561,15 @@ def build_chartdata(
         multi_items = list(multi_page_needed)
         if limit and limit > 0:
             single_items = single_items[:limit]
-            multi_items = multi_items[:max(0, limit - len(single_items))]
+            multi_items = multi_items[: max(0, limit - len(single_items))]
 
         total_pdf_tasks = len(single_items) + len(multi_items)
         pdf_done = 0
         last_cb_time = 0.0
 
-        print(f"[*] Placing {len(single_items):,} single-page PDFs into {us_dir} via {link_mode} ...")
+        print(
+            f"[*] Placing {len(single_items):,} single-page PDFs into {us_dir} via {link_mode} ..."
+        )
         for pdf_name_u, (target_name, _) in single_items:
             src_path = pdf_map.get(pdf_name_u)
             dst_path = us_dir / target_name
@@ -1332,7 +1601,9 @@ def build_chartdata(
 
             pdf_done += 1
             now = time.time()
-            if progress_callback and (now - last_cb_time >= 0.12 or pdf_done == total_pdf_tasks):
+            if progress_callback and (
+                now - last_cb_time >= 0.12 or pdf_done == total_pdf_tasks
+            ):
                 last_cb_time = now
                 el = now - t_link_start
                 sp = pdf_done / el if el > 0 else 0
@@ -1352,7 +1623,9 @@ def build_chartdata(
                 )
 
         # Split multi-page PDFs into strictly single-page PDFs
-        print(f"[*] Splitting {len(multi_items):,} multi-page PDFs into single-page PDFs (e.g. EC1ALT01.PDF, EC1ALT02.PDF) ...")
+        print(
+            f"[*] Splitting {len(multi_items):,} multi-page PDFs into single-page PDFs (e.g. EC1ALT01.PDF, EC1ALT02.PDF) ..."
+        )
         for pdf_name in multi_items:
             src_path = pdf_map.get(pdf_name.upper())
             if not src_path or not src_path.is_file():
@@ -1392,7 +1665,9 @@ def build_chartdata(
 
             pdf_done += 1
             now = time.time()
-            if progress_callback and (now - last_cb_time >= 0.12 or pdf_done == total_pdf_tasks):
+            if progress_callback and (
+                now - last_cb_time >= 0.12 or pdf_done == total_pdf_tasks
+            ):
                 last_cb_time = now
                 el = now - t_link_start
                 sp = pdf_done / el if el > 0 else 0
@@ -1421,7 +1696,9 @@ def build_chartdata(
     print(f"📁 Output Directory:      {output_dir}")
     print(f"📦 Plates Database:       {db_path}")
     print(f"📄 Chart Files Directory: {us_dir}")
-    print(f"🎨 Output Format:         {output_format.upper()} ({'Dynon Avionics SkyView compatible' if output_format == 'png' else 'FAA Vector PDF'})")
+    print(
+        f"🎨 Output Format:         {output_format.upper()} ({'Dynon Avionics SkyView compatible' if output_format == 'png' else 'FAA Vector PDF'})"
+    )
     if output_format == "png":
         print(f"✨ PNG Enhancement Mode:  {png_mode.upper()} (DPI: {dpi})")
         print(f"🖼️  Total PNGs Generated:  {completed:,} (Errors: {errors})")
@@ -1429,8 +1706,12 @@ def build_chartdata(
         print(f"📑 Single-Page PDFs:      {linked_count:,}")
         print(f"✂️  Multi-Page Split Pages: {split_pages_count:,}")
     print(f"🛩️  Total Airports:        {len(airports_to_insert):,}")
-    print(f"📊 Total Charts in DB:    {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert)-afd_charts_count:,}, AFD: {afd_charts_count:,})")
-    print(f"🌐 Georeferenced Charts:  {matched_georef_count:,} (extracted from PDF / georeferenced)")
+    print(
+        f"📊 Total Charts in DB:    {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert)-afd_charts_count:,}, AFD: {afd_charts_count:,})"
+    )
+    print(
+        f"🌐 Georeferenced Charts:  {matched_georef_count:,} (extracted from PDF / georeferenced)"
+    )
     print(f"⚡ File Processing Time:  {link_elapsed:.2f}s")
     print(f"⏱️  Total Elapsed Time:    {total_elapsed:.2f}s")
     print("=" * 65 + "\n")
@@ -1449,7 +1730,9 @@ def build_chartdata(
         "total_charts": len(charts_to_insert),
         "georeferenced_charts": matched_georef_count,
         "afd_charts_count": afd_charts_count,
-        "completed_files": completed if output_format == "png" else (linked_count + split_pages_count),
+        "completed_files": (
+            completed if output_format == "png" else (linked_count + split_pages_count)
+        ),
         "errors": errors if output_format == "png" else missing_count,
         "file_time": link_elapsed,
         "total_time": total_elapsed,
@@ -1461,7 +1744,11 @@ def build_chartdata(
                 stage="complete",
                 completed=completed if output_format == "png" else total_pdf_tasks,
                 total=total_tasks if output_format == "png" else total_pdf_tasks,
-                speed_per_sec=(completed / link_elapsed) if (output_format == "png" and link_elapsed > 0) else 0.0,
+                speed_per_sec=(
+                    (completed / link_elapsed)
+                    if (output_format == "png" and link_elapsed > 0)
+                    else 0.0
+                ),
                 elapsed_seconds=total_elapsed,
                 eta_seconds=0.0,
                 message="Recreation complete!",
@@ -1609,7 +1896,9 @@ def main() -> None:
             edition = DEFAULT_EDITION
 
         vols = [v.upper() for v in args.volumes]
-        print(f"[*] Downloading FAA d-TPP volumes ({', '.join(vols)}) for cycle {edition} to {args.faa_data_dir} ...")
+        print(
+            f"[*] Downloading FAA d-TPP volumes ({', '.join(vols)}) for cycle {edition} to {args.faa_data_dir} ..."
+        )
 
         def _cli_dl_cb(p: object) -> None:
             stage = getattr(p, "stage", "")
@@ -1621,7 +1910,10 @@ def main() -> None:
             elif stage == "downloading":
                 mb_dl = getattr(p, "bytes_downloaded", 0) / 1024 / 1024
                 mb_tot = getattr(p, "total_bytes", 0) / 1024 / 1024
-                pct = (getattr(p, "bytes_downloaded", 0) / max(1, getattr(p, "total_bytes", 1))) * 100
+                pct = (
+                    getattr(p, "bytes_downloaded", 0)
+                    / max(1, getattr(p, "total_bytes", 1))
+                ) * 100
                 speed_mb = getattr(p, "speed_bps", 0.0) / 1024 / 1024
                 eta = getattr(p, "eta_seconds", 0.0)
                 print(
@@ -1633,11 +1925,17 @@ def main() -> None:
                 cur_f = getattr(p, "bytes_downloaded", 0)
                 tot_f = getattr(p, "total_bytes", 0)
                 pct = (cur_f / max(1, tot_f)) * 100
-                print(f"\r[{vol_idx}/{tot_vols}] Extracting {vol}: {cur_f}/{tot_f} files ({pct:.1f}%)  ", end="", flush=True)
+                print(
+                    f"\r[{vol_idx}/{tot_vols}] Extracting {vol}: {cur_f}/{tot_f} files ({pct:.1f}%)  ",
+                    end="",
+                    flush=True,
+                )
             elif stage == "complete":
                 tot_mb = getattr(p, "total_bytes", 0) / 1024 / 1024
                 elapsed = getattr(p, "elapsed_seconds", 0.0)
-                print(f"\n[+] {getattr(p, 'message', '')} ({tot_mb:.1f} MB in {elapsed:.1f}s)")
+                print(
+                    f"\n[+] {getattr(p, 'message', '')} ({tot_mb:.1f} MB in {elapsed:.1f}s)"
+                )
 
         res = download_and_extract_faa_volumes(
             edition=edition,
@@ -1648,7 +1946,11 @@ def main() -> None:
         )
 
         extracted_xml = res.get("xml_path")
-        if extracted_xml and isinstance(extracted_xml, Path) and extracted_xml.is_file():
+        if (
+            extracted_xml
+            and isinstance(extracted_xml, Path)
+            and extracted_xml.is_file()
+        ):
             args.xml = extracted_xml
             print(f"[+] Using newly extracted d-TPP XML Metafile: {args.xml}")
 
@@ -1656,10 +1958,18 @@ def main() -> None:
             print("[+] Download and extraction complete. Exiting (--download-only).")
             return
 
-    ref_db = args.reference_db if (args.reference_db and args.reference_db.is_file()) else None
+    ref_db = (
+        args.reference_db
+        if (args.reference_db and args.reference_db.is_file())
+        else None
+    )
 
     # Resolve png_mode
-    png_mode = "standard" if args.non_enhanced else ("enhanced" if args.enhanced else args.png_mode)
+    png_mode = (
+        "standard"
+        if args.non_enhanced
+        else ("enhanced" if args.enhanced else args.png_mode)
+    )
     if png_mode == "non-enhanced":
         png_mode = "standard"
 

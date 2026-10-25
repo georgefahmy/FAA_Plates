@@ -2,7 +2,7 @@
 FAA d-TPP XML-Backed SQLite Plate Database & File Browser (`enhancer/plate_browser.py`).
 
 Parses the official FAA Digital Terminal Procedures Publication (`d-TPP_Metafile.xml`)
-and indexes all `.PDF` chart files inside `/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data`
+and indexes all `.PDF` chart files inside `/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data`
 (across `DDTPPA_*`, `DDTPPB_*`, `DDTPPC_*`, `DDTPPD_*`, `DDTPPE_*`) into a fast cached
 SQLite database so pilots can search and browse plates by:
 - State / Territory (e.g., `CA - California`)
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-DEFAULT_FAA_PDF_DIR = Path("/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data")
+DEFAULT_FAA_PDF_DIR = Path("/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data")
 DEFAULT_PLATES_DIR = DEFAULT_FAA_PDF_DIR  # Backwards-compatible alias
 
 CHART_CODE_LABELS: Dict[str, str] = {
@@ -98,7 +98,7 @@ class PlateChartEntry:
 class DTPPPlateBrowser:
     """
     Fast XML-backed SQLite browser for the consolidated FAA d-TPP PDF directory
-    (`/Users/GFahmy/Documents/RV-7/Airmate/FAA_pdf_data`).
+    (`/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data`).
     """
 
     def __init__(

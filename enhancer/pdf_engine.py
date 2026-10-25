@@ -59,14 +59,16 @@ def load_pdf_plate(
         mat = pymupdf.Matrix(dpi_scale, dpi_scale)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         locked_base = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("RGBA")
+        del pix
 
         W, H = locked_base.size
         sx = W / max(1.0, float(page.rect.width))
         sy = H / max(1.0, float(page.rect.height))
 
-        layout = _extract_pdf_vector_layout(page, locked_base, sx, sy)
+        drawings = page.get_drawings()
+        layout = _extract_pdf_vector_layout(page, locked_base, sx, sy, drawings=drawings)
         tokens, lines = _extract_pdf_vector_text(page, W, H, sx, sy, layout.vertical_lines_x)
-        _populate_minimums_col_bounds(page, tokens, layout, sx, sy)
+        _populate_minimums_col_bounds(page, tokens, layout, sx, sy, drawings=drawings)
         return locked_base, tokens, lines, layout
     finally:
         doc.close()
@@ -78,6 +80,7 @@ def _populate_minimums_col_bounds(
     layout: PlateLayout,
     sx: float,
     sy: float,
+    drawings: Optional[List[dict]] = None,
 ) -> None:
     """
     Locate the `CATEGORY | A | B | C | D` row in `y > 0.74 * H` and record the
@@ -93,7 +96,8 @@ def _populate_minimums_col_bounds(
     cat_tok = min(cat_toks, key=lambda t: t.center_y)
 
     min_table_v_lines: List[int] = []
-    for d in page.get_drawings():
+    d_list = drawings if drawings is not None else page.get_drawings()
+    for d in d_list:
         items = d.get("items", [])
         r = d.get("rect")
         if r is None or not items:
@@ -351,6 +355,7 @@ def _extract_pdf_vector_layout(
     locked_base: Image.Image,
     sx: float,
     sy: float,
+    drawings: Optional[List[dict]] = None,
 ) -> PlateLayout:
     """
     Extract exact vector table grid lines, cells, 3 profile missed-approach icon boxes,
@@ -361,10 +366,8 @@ def _extract_pdf_vector_layout(
     W, H = locked_base.size
     W_pdf = float(page.rect.width)
     H_pdf = float(page.rect.height)
-    rgb = np.array(locked_base.convert("RGB"), copy=True)
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-    drawings = page.get_drawings()
+    drawings_list = drawings if drawings is not None else page.get_drawings()
 
     raw_h_lines: List[int] = []
     raw_v_lines: List[int] = []
@@ -376,7 +379,7 @@ def _extract_pdf_vector_layout(
     msa_circle: Optional[DetectedCircle] = None
     msa_inner_box: Optional[Tuple[int, int, int, int]] = None
 
-    for idx, d in enumerate(drawings):
+    for idx, d in enumerate(drawings_list):
         r = d.get("rect")
         if r is None:
             continue
@@ -474,7 +477,7 @@ def _extract_pdf_vector_layout(
                 break
 
     # Reconstruct exact 3 top-left Profile View Missed Approach icon boxes from PDF vector grid lines
-    profile_icon_boxes = _extract_profile_icon_boxes(page, sx, sy, W_pdf, H_pdf)
+    profile_icon_boxes = _extract_profile_icon_boxes(page, sx, sy, W_pdf, H_pdf, drawings=drawings_list)
 
     # Build table cells via OpenCV on the grid lines + quad_boxes for cell snapping
     table_cells = list(quad_boxes)
@@ -498,7 +501,7 @@ def _extract_pdf_vector_layout(
     return PlateLayout(
         W=W,
         H=H,
-        gray=gray,
+        gray=None,
         horizontal_lines_y=horizontal_lines_y,
         vertical_lines_x=vertical_lines_x,
         table_cells=table_cells,
@@ -521,17 +524,18 @@ def _extract_profile_icon_boxes(
     sy: float,
     W_pdf: float,
     H_pdf: float,
+    drawings: Optional[List[dict]] = None,
 ) -> List[Tuple[int, int, int, int]]:
     """
     Find the 1..3 procedural Missed Approach icon boxes at the top-left of the
     Profile View (`0.61 * H_pdf <= y <= 0.73 * H_pdf`, `x <= 0.42 * W_pdf`)
     directly from the PDF's horizontal and vertical vector lines.
     """
-    drawings = page.get_drawings()
+    drawings_list = drawings if drawings is not None else page.get_drawings()
     v_segs: List[Tuple[float, float, float]] = []
     h_segs: List[Tuple[float, float, float]] = []
 
-    for d in drawings:
+    for d in drawings_list:
         items = d.get("items", [])
         if len(items) == 1 and items[0][0] == "l":
             _, p1, p2 = items[0]
