@@ -13,49 +13,53 @@ from PIL import Image, ImageDraw
 
 def generate_app_icon(output_icns_path: Path) -> None:
     """Generate high-resolution tactical aviation ICNS icon."""
-    base_img = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    d = ImageDraw.Draw(base_img)
+    custom_icon_path = Path(__file__).resolve().parent / "desktop_ui" / "assets" / "app_icon.png"
+    if custom_icon_path.is_file():
+        base_img = Image.open(custom_icon_path).convert("RGBA")
+    else:
+        base_img = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+        d = ImageDraw.Draw(base_img)
 
-    # Dark slate/navy rounded squircle background
-    d.rounded_rectangle(
-        [32, 32, 992, 992],
-        radius=220,
-        fill=(22, 28, 40, 255),
-        outline=(55, 75, 105, 255),
-        width=12,
-    )
+        # Dark slate/navy rounded squircle background
+        d.rounded_rectangle(
+            [32, 32, 992, 992],
+            radius=220,
+            fill=(22, 28, 40, 255),
+            outline=(55, 75, 105, 255),
+            width=12,
+        )
 
-    # Inner subtle grid / ring
-    d.arc([160, 160, 864, 864], start=0, end=360, fill=(35, 48, 70, 255), width=6)
-    d.arc([260, 260, 764, 764], start=0, end=360, fill=(35, 48, 70, 255), width=4)
+        # Inner subtle grid / ring
+        d.arc([160, 160, 864, 864], start=0, end=360, fill=(35, 48, 70, 255), width=6)
+        d.arc([260, 260, 764, 764], start=0, end=360, fill=(35, 48, 70, 255), width=4)
 
-    # 4-Color Tactical Briefing indicator bands
-    # Cyan, Magenta, Amber, Red
-    d.line([(160, 820), (320, 820)], fill=(0, 215, 245, 255), width=28)
-    d.line([(360, 820), (520, 820)], fill=(240, 50, 215, 255), width=28)
-    d.line([(560, 820), (720, 820)], fill=(255, 165, 0, 255), width=28)
-    d.line([(760, 820), (864, 820)], fill=(245, 50, 50, 255), width=28)
+        # 4-Color Tactical Briefing indicator bands
+        # Cyan, Magenta, Amber, Red
+        d.line([(160, 820), (320, 820)], fill=(0, 215, 245, 255), width=28)
+        d.line([(360, 820), (520, 820)], fill=(240, 50, 215, 255), width=28)
+        d.line([(560, 820), (720, 820)], fill=(255, 165, 0, 255), width=28)
+        d.line([(760, 820), (864, 820)], fill=(245, 50, 50, 255), width=28)
 
-    # Center stylized airplane glyph
-    airplane_pts = [
-        (512, 220),   # Nose
-        (560, 440),   # Wing root right
-        (860, 540),   # Wing tip right
-        (860, 580),   # Wing tip trailing
-        (560, 540),   # Wing root trailing
-        (550, 680),   # Fuselage to tail
-        (640, 740),   # Stabilizer right tip
-        (640, 770),   # Stabilizer trailing
-        (512, 740),   # Tail center
-        (384, 770),   # Stabilizer left trailing
-        (384, 740),   # Stabilizer left tip
-        (474, 680),   # Fuselage to tail left
-        (464, 540),   # Wing root trailing left
-        (164, 580),   # Wing tip trailing left
-        (164, 540),   # Wing tip left
-        (464, 440),   # Wing root left
-    ]
-    d.polygon(airplane_pts, fill=(245, 250, 255, 255))
+        # Center stylized airplane glyph
+        airplane_pts = [
+            (512, 220),   # Nose
+            (560, 440),   # Wing root right
+            (860, 540),   # Wing tip right
+            (860, 580),   # Wing tip trailing
+            (560, 540),   # Wing root trailing
+            (550, 680),   # Fuselage to tail
+            (640, 740),   # Stabilizer right tip
+            (640, 770),   # Stabilizer trailing
+            (512, 740),   # Tail center
+            (384, 770),   # Stabilizer left trailing
+            (384, 740),   # Stabilizer left tip
+            (474, 680),   # Fuselage to tail left
+            (464, 540),   # Wing root trailing left
+            (164, 580),   # Wing tip trailing left
+            (164, 540),   # Wing tip left
+            (464, 440),   # Wing root left
+        ]
+        d.polygon(airplane_pts, fill=(245, 250, 255, 255))
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         iconset_dir = Path(tmp_dir) / "AppIcon.iconset"

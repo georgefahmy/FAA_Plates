@@ -4,13 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>Approach Plate 4-Color Tactical Enhancer</title>
+  <link rel="icon" type="image/png" href="assets/app_icon.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <!-- Top Navigation Header -->
   <header class="top-nav">
     <div class="nav-brand">
-      <span class="brand-icon">✈️</span>
+      <img src="assets/app_icon.png" class="brand-logo-img" alt="Logo">
       <span class="brand-title">FAA Plate Enhancer</span>
       <span id="cycle-badge" class="badge-cycle">Cycle --</span>
     </div>
@@ -246,7 +247,7 @@
               🚀 Download FAA Data & Generate Dynon Plates
             </button>
             <button id="btn-run-gen" class="btn btn-secondary" onclick="triggerPipeline('generate_only')">
-              ⚡ Generate Only
+              ⚡ Generate
             </button>
           </div>
         </div>
@@ -255,7 +256,10 @@
         <div id="progress-card" class="panel-card progress-card hidden">
           <div class="progress-header">
             <div id="prog-status" class="prog-title">Ready</div>
-            <div id="prog-eta" class="prog-eta">ETA: --</div>
+            <div class="progress-header-right">
+              <span id="prog-eta" class="prog-eta">ETA: --</span>
+              <button id="btn-prog-dismiss" class="btn-icon btn-dismiss hidden" onclick="dismissProgressCard()" title="Dismiss">✕</button>
+            </div>
           </div>
           <div class="progress-bar-track">
             <div id="prog-fill" class="progress-bar-fill" style="width: 0%;"></div>
@@ -271,6 +275,9 @@
             </button>
             <button id="btn-pipeline-stop" class="btn btn-danger btn-sm" onclick="stopPipeline()">
               🛑 Stop
+            </button>
+            <button id="btn-pipeline-done" class="btn btn-secondary btn-sm hidden" onclick="dismissProgressCard()">
+              ✓ Done (Dismiss)
             </button>
           </div>
         </div>

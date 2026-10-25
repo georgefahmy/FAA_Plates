@@ -39,13 +39,24 @@ def main() -> None:
 
     api.set_window(window)
 
-    # Bring native window to foreground on macOS
-    try:
-        from AppKit import NSApplication
+    icon_path = project_root / "desktop_ui" / "assets" / "app_icon.png"
 
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-    except Exception:
-        pass
+    def apply_dock_icon() -> None:
+        try:
+            from AppKit import NSApplication, NSImage
+
+            app = NSApplication.sharedApplication()
+            app.activateIgnoringOtherApps_(True)
+            if icon_path.is_file():
+                img = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+                if img:
+                    app.setApplicationIconImage_(img)
+        except Exception:
+            pass
+
+    # Set icon before starting event loop and ensure it stays upon window shown
+    apply_dock_icon()
+    window.events.shown += apply_dock_icon
 
     webview.start(debug=False)
 
