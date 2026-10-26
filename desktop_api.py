@@ -11,9 +11,8 @@ import base64
 import io
 import json
 import threading
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Tuple
 
 import webview
 from PIL import Image
@@ -27,19 +26,12 @@ from enhancer.dynon_nav_downloader import (
     fetch_available_dynon_databases,
 )
 from enhancer.faa_downloader import (
-    DEFAULT_EDITION,
-    DEFAULT_VOLUMES,
     DownloadProgress,
     download_and_extract_faa_volumes,
     fetch_available_editions_with_metadata,
 )
 from enhancer.pipeline_controller import PipelineController
-from enhancer.plate_browser import (
-    DEFAULT_FAA_PDF_DIR,
-    AirportEntry,
-    DTPPPlateBrowser,
-    PlateChartEntry,
-)
+from enhancer.plate_browser import DEFAULT_FAA_PDF_DIR, DTPPPlateBrowser
 from recreate_airmate_chartdata import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_WORKERS,
@@ -337,7 +329,8 @@ class DesktopAPI:
         if not res:
             return {"success": False, "cancelled": True}
 
-        save_path = Path(res[0] if isinstance(res, (list, tuple)) else res)
+        raw_path = str(res[0]) if isinstance(res, (list, tuple)) else str(res)
+        save_path = Path(raw_path)
 
         try:
             enabled_colors = (
@@ -576,7 +569,7 @@ class DesktopAPI:
                         )
 
                     summary = build_chartdata(
-                        xml_path=Path(xml_path),
+                        xml_path=Path(str(xml_path)),
                         faa_data_dir=target_faa,
                         output_dir=target_out,
                         output_format=format_type,

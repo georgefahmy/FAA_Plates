@@ -32,7 +32,7 @@ import sqlite3
 import sys
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -41,7 +41,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 try:
     from enhancer.pipeline_controller import PipelineController
 except ImportError:
-    PipelineController = None
+    PipelineController = None  # type: ignore[assignment, misc]
 
 
 @dataclass
@@ -61,7 +61,7 @@ try:
     import pymupdf
 except ImportError:
     try:
-        import fitz as pymupdf
+        import fitz as pymupdf  # type: ignore[no-redef, import-untyped]
     except ImportError:
         print(
             "[!] Error: PyMuPDF ('pymupdf' or 'fitz') is required. Install via: pip install pymupdf"
@@ -71,7 +71,7 @@ except ImportError:
 try:
     from cli import enhance_pdf_plate
 except Exception:
-    enhance_pdf_plate = None
+    enhance_pdf_plate = None  # type: ignore[assignment]
 
 try:
     from enhancer.faa_downloader import (
@@ -81,13 +81,15 @@ try:
         fetch_available_editions,
     )
 except ImportError:
-    download_and_extract_faa_volumes = None
-    fetch_available_editions = None
+    download_and_extract_faa_volumes = None  # type: ignore[assignment]
+    fetch_available_editions = None  # type: ignore[assignment]
     DEFAULT_EDITION = "261001"
     DEFAULT_VOLUMES = ["A", "B", "C", "D", "E"]
 
 
-DEFAULT_FAA_DATA_DIR = Path("/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data")
+DEFAULT_FAA_DATA_DIR = Path(
+    "/Users/GFahmy/Documents/RV-7/Software/sv_software/FAA_pdf_data"
+)
 DEFAULT_OUTPUT_DIR = Path("/Users/GFahmy/Documents/RV-7/Software/sv_software/ChartData")
 DEFAULT_WORKERS = max(4, min(12, (os.cpu_count() or 8) - 2))
 
@@ -220,9 +222,9 @@ def extract_georef_from_pdf(pdf_path: Path) -> Optional[dict]:
             return None
 
         lat0, lon0 = gpts[0], gpts[1]  # BL
-        lat1, lon1 = gpts[2], gpts[3]  # BR
+        lon1 = gpts[3]  # BR
         lat2, lon2 = gpts[4], gpts[5]  # TR
-        lat3, lon3 = gpts[6], gpts[7]  # TL
+        lat3 = gpts[6]  # TL
 
         cm_m = re.search(r"\"Central_Meridian\",\s*([-\d\.]+)", vp_str)
         lat_o_m = re.search(r"\"Latitude_Of_Origin\",\s*([-\d\.]+)", vp_str)
@@ -442,7 +444,7 @@ class FAABookletIndex:
             if len(doc) <= 1:
                 doc.close()
                 return []
-            texts = [page.get_text().upper() for page in doc]
+            texts = [doc[i].get_text().upper() for i in range(len(doc))]
             doc.close()
             self._cache[name_u] = texts
             return texts
@@ -989,6 +991,24 @@ def build_chartdata(
                             (ident, orig_chart_name.upper())
                         ) or ref_georef.get((apt_id, orig_chart_name.upper()))
 
+                    lat1: Optional[str] = None
+                    long1: Optional[str] = None
+                    lat2: Optional[str] = None
+                    long2: Optional[str] = None
+                    x1: Optional[str] = None
+                    y1: Optional[str] = None
+                    x2: Optional[str] = None
+                    y2: Optional[str] = None
+                    orient: Optional[str] = None
+                    d_left: Optional[str] = None
+                    d_right: Optional[str] = None
+                    d_top: Optional[str] = None
+                    d_bottom: Optional[str] = None
+                    v_x: Any = None
+                    v_y: Any = None
+                    v_rad: Any = None
+                    exc_areas: Any = None
+
                     if georef:
                         matched_georef_count += 1
                         lat1, long1 = str(georef["Lat1"]), str(georef["Long1"])
@@ -1036,11 +1056,6 @@ def build_chartdata(
                         v_rad, exc_areas = georef.get("ValidWithinRadius"), georef.get(
                             "ExcludeAreas"
                         )
-                    else:
-                        lat1 = long1 = lat2 = long2 = None
-                        x1 = y1 = x2 = y2 = None
-                        orient = d_left = d_right = d_top = d_bottom = None
-                        v_x = v_y = v_rad = exc_areas = None
 
                     stem, orig_ext = os.path.splitext(pdf_name)
                     chart_target_name = f"{stem}{target_ext}"
@@ -1405,7 +1420,7 @@ def build_chartdata(
         print(
             f"[*] Preparing Dynon-compatible PNG generation (Mode: {png_mode.upper()}, DPI: {dpi}, Workers: {workers}) ..."
         )
-        render_tasks = []
+        render_tasks: List[Tuple[Path, Path, int, bool, bool, int, Optional[Path]]] = []
 
         # 1. Single-page chart tasks
         for pdf_u, (target_name, is_iac) in single_page_needed.items():
@@ -1519,7 +1534,7 @@ def build_chartdata(
 
                     if completed % 100 == 0 or completed == total_tasks:
                         print(
-                            f"\r[*] Rendered {completed:,}/{total_tasks:,} PNGs ({completed/total_tasks*100:.1f}%) "
+                            f"\r[*] Rendered {completed:,}/{total_tasks:,} PNGs ({completed / total_tasks * 100:.1f}%) "
                             f"— {sp:.1f} pl/s — ETA {int(eta)}s",
                             end="",
                             flush=True,
@@ -1548,8 +1563,8 @@ def build_chartdata(
             return {
                 "success": False,
                 "stopped": True,
-                "total_airports": total_airports,
-                "total_charts": total_charts,
+                "total_airports": len(airports_to_insert),
+                "total_charts": len(charts_to_insert),
                 "completed": completed,
                 "output_dir": str(output_dir),
                 "error": "Pipeline stopped by user",
@@ -1707,7 +1722,7 @@ def build_chartdata(
         print(f"✂️  Multi-Page Split Pages: {split_pages_count:,}")
     print(f"🛩️  Total Airports:        {len(airports_to_insert):,}")
     print(
-        f"📊 Total Charts in DB:    {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert)-afd_charts_count:,}, AFD: {afd_charts_count:,})"
+        f"📊 Total Charts in DB:    {len(charts_to_insert):,} (d-TPP: {len(charts_to_insert) - afd_charts_count:,}, AFD: {afd_charts_count:,})"
     )
     print(
         f"🌐 Georeferenced Charts:  {matched_georef_count:,} (extracted from PDF / georeferenced)"
@@ -1882,12 +1897,12 @@ def main() -> None:
 
     # Handle FAA Download if requested
     if args.download_faa or args.download_only:
-        if not download_and_extract_faa_volumes:
+        if download_and_extract_faa_volumes is None:
             print("[!] Error: enhancer.faa_downloader not available.")
             sys.exit(1)
 
         edition = args.edition
-        if not edition and fetch_available_editions:
+        if not edition and fetch_available_editions is not None:
             print("[*] Checking available cycle editions from faa.gov ...")
             available = fetch_available_editions()
             edition = available[0] if available else DEFAULT_EDITION

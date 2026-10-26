@@ -589,11 +589,11 @@ body {
 .dynon-panel {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: 24px 32px;
   display: flex;
   flex-direction: column;
   gap: 20px;
-  max-width: 900px;
+  max-width: 1360px;
   margin: 0 auto;
   width: 100%;
 }
@@ -630,8 +630,8 @@ body {
 }
 
 .cycle-select-group {
-  width: 260px;
-  flex: 0 0 260px;
+  width: 280px;
+  flex: 0 0 280px;
 }
 
 .custom-edition-group {
@@ -670,6 +670,8 @@ body {
 .input-action-row input {
   flex: 1;
   min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
 }
 
 .checkbox-row {

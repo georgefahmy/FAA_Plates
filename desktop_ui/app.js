@@ -473,14 +473,59 @@ async function downloadDynonNavOnly() {
   const navDir = document.getElementById("path-nav-dir").value;
 
   const progressCard = document.getElementById("progress-card");
-  progressCard.classList.remove("hidden");
+  progressCard.classList.remove("hidden", "completed", "stopped", "error");
   document.getElementById("prog-status").textContent = `Downloading ${filename}...`;
+  document.getElementById("prog-status").style.color = "#00d7f5";
   document.getElementById("prog-fill").style.width = "0%";
+  document.getElementById("prog-eta").textContent = "Downloading";
+  document.getElementById("m-stage").textContent = "NAV DOWNLOAD";
+  document.getElementById("m-speed").textContent = "--";
+  document.getElementById("m-vol").textContent = "--";
+
+  const pauseBtn = document.getElementById("btn-pipeline-pause");
+  const stopBtn = document.getElementById("btn-pipeline-stop");
+  const doneBtn = document.getElementById("btn-pipeline-done");
+  const dismissBtn = document.getElementById("btn-prog-dismiss");
+
+  if (pauseBtn) pauseBtn.style.display = "none";
+  if (stopBtn) stopBtn.style.display = "none";
+  if (doneBtn) doneBtn.classList.add("hidden");
+  if (dismissBtn) dismissBtn.classList.add("hidden");
 
   try {
-    await window.pywebview.api.download_dynon_nav_database(navUrl, navDir, filename);
+    const res = await window.pywebview.api.download_dynon_nav_database(navUrl, navDir, filename);
+    if (res && res.success) {
+      progressCard.classList.add("completed");
+      document.getElementById("prog-status").textContent = `✅ Downloaded ${filename} successfully!`;
+      document.getElementById("prog-status").style.color = "#10b981";
+      document.getElementById("prog-fill").style.width = "100%";
+      document.getElementById("prog-eta").textContent = "Done";
+      document.getElementById("m-stage").textContent = "COMPLETE";
+      if (doneBtn) doneBtn.classList.remove("hidden");
+      if (dismissBtn) dismissBtn.classList.remove("hidden");
+    } else {
+      progressCard.classList.add("error");
+      document.getElementById("prog-status").textContent = `Error: ${res ? res.error : "Download failed"}`;
+      document.getElementById("prog-status").style.color = "#f53232";
+      document.getElementById("prog-eta").textContent = "Failed";
+      if (doneBtn) doneBtn.classList.remove("hidden");
+      if (dismissBtn) dismissBtn.classList.remove("hidden");
+    }
   } catch (err) {
     console.error("Nav download failed:", err);
+    progressCard.classList.add("error");
+    document.getElementById("prog-status").textContent = `Download failed: ${err}`;
+    document.getElementById("prog-status").style.color = "#f53232";
+    if (doneBtn) doneBtn.classList.remove("hidden");
+    if (dismissBtn) dismissBtn.classList.remove("hidden");
+  }
+}
+
+function dismissProgressCard() {
+  const card = document.getElementById("progress-card");
+  if (card) {
+    card.classList.add("hidden");
+    card.classList.remove("completed", "stopped", "error");
   }
 }
 
@@ -549,10 +594,14 @@ async function triggerPipeline(action) {
   const navDir = document.getElementById("path-nav-dir").value;
 
   const progressCard = document.getElementById("progress-card");
-  progressCard.classList.remove("hidden");
+  progressCard.classList.remove("hidden", "completed", "stopped", "error");
   document.getElementById("prog-status").textContent = "Starting pipeline...";
   document.getElementById("prog-status").style.color = "#00d7f5";
   document.getElementById("prog-fill").style.width = "0%";
+  document.getElementById("prog-eta").textContent = "ETA: --";
+  document.getElementById("m-stage").textContent = "STARTING";
+  document.getElementById("m-speed").textContent = "--";
+  document.getElementById("m-vol").textContent = "--";
 
   isPipelineRunning = true;
   isPipelinePaused = false;
@@ -560,13 +609,20 @@ async function triggerPipeline(action) {
 
   const pauseBtn = document.getElementById("btn-pipeline-pause");
   const stopBtn = document.getElementById("btn-pipeline-stop");
+  const doneBtn = document.getElementById("btn-pipeline-done");
+  const dismissBtn = document.getElementById("btn-prog-dismiss");
+
   if (pauseBtn) {
+    pauseBtn.style.display = "inline-flex";
     pauseBtn.textContent = "⏸️ Pause";
     pauseBtn.disabled = false;
   }
   if (stopBtn) {
+    stopBtn.style.display = "inline-flex";
     stopBtn.disabled = false;
   }
+  if (doneBtn) doneBtn.classList.add("hidden");
+  if (dismissBtn) dismissBtn.classList.add("hidden");
 
   try {
     await window.pywebview.api.run_pipeline(
@@ -593,6 +649,7 @@ async function triggerPipeline(action) {
 
 // Real-Time Callback from Python to JS
 window.__onPipelineProgress = function(p) {
+  const progressCard = document.getElementById("progress-card");
   const statusEl = document.getElementById("prog-status");
   const fillEl = document.getElementById("prog-fill");
   const etaEl = document.getElementById("prog-eta");
@@ -601,16 +658,31 @@ window.__onPipelineProgress = function(p) {
   const mVol = document.getElementById("m-vol");
   const pauseBtn = document.getElementById("btn-pipeline-pause");
   const stopBtn = document.getElementById("btn-pipeline-stop");
+  const doneBtn = document.getElementById("btn-pipeline-done");
+  const dismissBtn = document.getElementById("btn-prog-dismiss");
 
   if (p.is_stopped || p.stage === "stopped") {
     isPipelineRunning = false;
     isPipelinePaused = false;
     setPipelineActionButtonsEnabled(true);
+
+    if (progressCard) {
+      progressCard.classList.remove("completed", "error");
+      progressCard.classList.add("stopped");
+    }
+
     statusEl.textContent = p.status || "🛑 Pipeline stopped by user";
     statusEl.style.color = "#f53232";
     etaEl.textContent = "Stopped";
-    if (pauseBtn) pauseBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = true;
+
+    mStage.textContent = "STOPPED";
+    mSpeed.textContent = "--";
+    mVol.textContent = "--";
+
+    if (pauseBtn) pauseBtn.style.display = "none";
+    if (stopBtn) stopBtn.style.display = "none";
+    if (doneBtn) doneBtn.classList.remove("hidden");
+    if (dismissBtn) dismissBtn.classList.remove("hidden");
     return;
   }
 
@@ -618,10 +690,24 @@ window.__onPipelineProgress = function(p) {
     isPipelineRunning = false;
     isPipelinePaused = false;
     setPipelineActionButtonsEnabled(true);
+
+    if (progressCard) {
+      progressCard.classList.remove("completed", "stopped");
+      progressCard.classList.add("error");
+    }
+
     statusEl.textContent = `Error: ${p.error}`;
     statusEl.style.color = "#f53232";
-    if (pauseBtn) pauseBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = true;
+    etaEl.textContent = "Failed";
+
+    mStage.textContent = "ERROR";
+    mSpeed.textContent = "--";
+    mVol.textContent = "--";
+
+    if (pauseBtn) pauseBtn.style.display = "none";
+    if (stopBtn) stopBtn.style.display = "none";
+    if (doneBtn) doneBtn.classList.remove("hidden");
+    if (dismissBtn) dismissBtn.classList.remove("hidden");
     return;
   }
 
@@ -629,17 +715,32 @@ window.__onPipelineProgress = function(p) {
     isPipelineRunning = false;
     isPipelinePaused = false;
     setPipelineActionButtonsEnabled(true);
+
+    if (progressCard) {
+      progressCard.classList.remove("stopped", "error");
+      progressCard.classList.add("completed");
+    }
+
     fillEl.style.width = "100%";
-    statusEl.textContent = p.status || "Completed Successfully!";
     statusEl.style.color = "#10b981";
     etaEl.textContent = "Done";
-    if (pauseBtn) pauseBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = true;
+
     if (p.summary && p.summary.saved_file) {
-      statusEl.textContent = `Saved: ${p.summary.saved_file.split("/").pop()}`;
+      statusEl.textContent = `Completed! Saved: ${p.summary.saved_file.split("/").pop()}`;
     } else if (p.summary && p.summary.output_dir) {
       statusEl.textContent = `Completed! Saved to: ${p.summary.output_dir}`;
+    } else {
+      statusEl.textContent = p.status || "Completed Successfully!";
     }
+
+    mStage.textContent = "COMPLETE";
+    mSpeed.textContent = "Finished";
+    mVol.textContent = "All Volumes";
+
+    if (pauseBtn) pauseBtn.style.display = "none";
+    if (stopBtn) stopBtn.style.display = "none";
+    if (doneBtn) doneBtn.classList.remove("hidden");
+    if (dismissBtn) dismissBtn.classList.remove("hidden");
     return;
   }
 

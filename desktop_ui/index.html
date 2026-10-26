@@ -164,11 +164,14 @@
               <div class="input-action-row">
                 <input type="text" id="path-faa-dir" class="input-text" readonly>
                 <button class="btn btn-secondary btn-sm" onclick="browseFolder('faa')">Browse...</button>
-                <button id="btn-run-dl" class="btn btn-secondary btn-sm" onclick="triggerPipeline('download_only')">
-                📥 Download
-              </button>
               </div>
             </div>
+          </div>
+
+          <div class="action-bar">
+            <button id="btn-run-dl" class="btn btn-primary" onclick="triggerPipeline('download_only')">
+              📥 Download FAA d-TPP Data Only
+            </button>
           </div>
         </div>
 
