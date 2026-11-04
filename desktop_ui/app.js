@@ -8,7 +8,7 @@ let currentChart = null;
 let currentChartsList = [];
 let currentPlateData = null;
 let zoomLevel = 1.0;
-let currentViewMode = "enhanced";
+let currentViewMode = "original";
 let searchDebounceTimer = null;
 let dynonFormat = "png";
 let dynonMode = "enhanced";
@@ -76,6 +76,7 @@ function onAppInitialized(data) {
   // Set default airport & charts if available
   if (data.default_airport && data.default_charts) {
     document.getElementById("airport-search-input").value = data.default_airport.ident;
+    setViewMode("original");
     populatePlateSelect(data.default_charts);
   }
 }
@@ -150,6 +151,7 @@ document.addEventListener("click", (e) => {
 async function selectAirport(airport) {
   searchInput.value = airport.ident;
   resultsDropdown.classList.add("hidden");
+  setViewMode("original");
 
   try {
     const charts = await window.pywebview.api.get_airport_charts(airport.id);
@@ -215,6 +217,56 @@ function populatePlateSelect(charts) {
 
   renderCurrentPlate();
 }
+
+function navigatePlate(delta) {
+  const plateSelect = document.getElementById("plate-select");
+  if (!plateSelect) return;
+
+  const validOptions = Array.from(plateSelect.options).filter(opt => opt.value);
+  if (validOptions.length <= 1) return;
+
+  let currentIndex = validOptions.findIndex(opt => opt.value === currentPlatePath);
+  if (currentIndex === -1) currentIndex = 0;
+
+  let nextIndex = currentIndex + delta;
+  if (nextIndex < 0) {
+    nextIndex = validOptions.length - 1;
+  } else if (nextIndex >= validOptions.length) {
+    nextIndex = 0;
+  }
+
+  const nextOpt = validOptions[nextIndex];
+  if (nextOpt && nextOpt.value !== currentPlatePath) {
+    plateSelect.value = nextOpt.value;
+    currentPlatePath = nextOpt.value;
+    currentChart = currentChartsList.find(c => c.pdf_path === currentPlatePath) || null;
+    renderCurrentPlate();
+  }
+}
+
+// Global Keyboard Navigation (Arrow Keys)
+window.addEventListener("keydown", (e) => {
+  const viewerTab = document.getElementById("view-viewer");
+  if (!viewerTab || !viewerTab.classList.contains("active")) return;
+
+  // Don't intercept when user is typing in an input field or textarea
+  const tag = (e.target.tagName || "").toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+
+  if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") {
+    e.preventDefault();
+    navigatePlate(1);
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") {
+    e.preventDefault();
+    navigatePlate(-1);
+  } else if (e.key === "1") {
+    setViewMode("original");
+  } else if (e.key === "2") {
+    setViewMode("split");
+  } else if (e.key === "3") {
+    setViewMode("enhanced");
+  }
+});
 
 // ==========================================================================
 // Tactical Plate Rendering

@@ -55,11 +55,15 @@
           <div id="airport-results" class="autocomplete-dropdown hidden"></div>
         </div>
 
-        <!-- Plate Selector Dropdown -->
-        <div class="select-wrapper plate-select-wrapper">
-          <select id="plate-select" class="select-input">
-            <option value="">Select Approach Plate...</option>
-          </select>
+        <!-- Plate Selector Dropdown with Quick Arrow Controls -->
+        <div class="plate-nav-group">
+          <button class="btn-icon" onclick="navigatePlate(-1)" title="Previous Chart (Arrow Up/Left)">‹</button>
+          <div class="select-wrapper plate-select-wrapper">
+            <select id="plate-select" class="select-input">
+              <option value="">Select Approach Plate...</option>
+            </select>
+          </div>
+          <button class="btn-icon" onclick="navigatePlate(1)" title="Next Chart (Arrow Down/Right)">›</button>
         </div>
 
         <div class="divider-v"></div>
@@ -87,11 +91,11 @@
 
         <div class="divider-v"></div>
 
-        <!-- View Mode (Enhanced / Original / Split) -->
+        <!-- View Mode (Original / Split / Enhanced) -->
         <div class="segmented-control">
-          <button id="view-mode-enhanced" class="seg-btn active" onclick="setViewMode('enhanced')">Enhanced</button>
+          <button id="view-mode-enhanced" class="seg-btn" onclick="setViewMode('enhanced')">Enhanced</button>
           <button id="view-mode-split" class="seg-btn" onclick="setViewMode('split')">Split</button>
-          <button id="view-mode-original" class="seg-btn" onclick="setViewMode('original')">Original</button>
+          <button id="view-mode-original" class="seg-btn active" onclick="setViewMode('original')">Original</button>
         </div>
 
         <!-- Zoom Controls -->

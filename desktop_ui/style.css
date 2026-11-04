@@ -299,9 +299,17 @@ body {
   font-size: 11px;
 }
 
+.plate-nav-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  max-width: 440px;
+}
+
 .plate-select-wrapper {
   flex: 1;
-  max-width: 380px;
+  min-width: 0;
 }
 
 .select-input {
